@@ -2,7 +2,7 @@
 <project version="4">
   <component name="JmixDataStoreSettingsManager">
     <moduleSettings>
-      <entry key="tach-connect-jmix.main">
+      <entry key="db-react-jmix.main">
         <ModuleSettings>
           <option name="dataStoreOptionsV2">
             <map>
