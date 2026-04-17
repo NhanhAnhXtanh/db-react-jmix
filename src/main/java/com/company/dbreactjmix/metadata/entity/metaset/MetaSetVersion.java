@@ -15,7 +15,8 @@ import java.util.UUID;
 
 @JmixEntity
 @Table(name = "META_SET_VERSION", indexes = {
-        @Index(name = "IDX_META_SET_VERSION_META_SET", columnList = "META_SET_ID")
+        @Index(name = "IDX_META_SET_VERSION_META_SET", columnList = "META_SET_ID"),
+        @Index(name = "IDX_META_SET_VERSION_META_SET_VERSION_NO", columnList = "META_SET_ID, VERSION_NO", unique = true)
 })
 @Entity
 public class MetaSetVersion {
@@ -35,6 +36,9 @@ public class MetaSetVersion {
     @Column(name = "HASH_DATA")
     @Lob
     private String hashData;
+
+    @Column(name = "VERSION_NO", nullable = false)
+    private Integer versionNo;
 
     @Column(name = "VERSION", nullable = false)
     @Version
@@ -70,6 +74,14 @@ public class MetaSetVersion {
 
     public void setHashData(String hashData) {
         this.hashData = hashData;
+    }
+
+    public Integer getVersionNo() {
+        return versionNo;
+    }
+
+    public void setVersionNo(Integer versionNo) {
+        this.versionNo = versionNo;
     }
 
     public MetaSet getMetaSet() {

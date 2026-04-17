@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                      http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd"
+        objectQuotingStrategy="QUOTE_ONLY_RESERVED_WORDS">
+
+    <changeSet id="1" author="db-react-jmix">
+        <addColumn tableName="META_SET_VERSION">
+            <column name="VERSION_NO" type="INT" defaultValueNumeric="1">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+    </changeSet>
+
+    <changeSet id="2" author="db-react-jmix">
+        <createIndex indexName="IDX_META_SET_CODE" tableName="META_SET" unique="true">
+            <column name="CODE"/>
+        </createIndex>
+    </changeSet>
+
+    <changeSet id="3" author="db-react-jmix">
+        <createIndex indexName="IDX_META_SET_VERSION_META_SET_VERSION_NO" tableName="META_SET_VERSION" unique="true">
+            <column name="META_SET_ID"/>
+            <column name="VERSION_NO"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>

@@ -65,7 +65,7 @@ public class ConnectionConfigService {
                 .orElse(null);
     }
 
-    private String buildCode(DbConnectionRequest request) {
+    public String buildCode(DbConnectionRequest request) {
         String host = request.getHost().replaceAll("[^A-Za-z0-9]", "-");
         return String.format("%s-%s-%s-%s",
                 request.getDatabaseType().name().toLowerCase(),

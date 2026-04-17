@@ -2,12 +2,15 @@ package com.company.dbreactjmix.metadata.controller;
 
 import com.company.dbreactjmix.metadata.db.service.MetadataJdbcService;
 import com.company.dbreactjmix.metadata.db.service.ConnectionConfigService;
+import com.company.dbreactjmix.metadata.db.service.MetaSetSnapshotService;
 import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.QueryBuildRequest;
 import com.company.dbreactjmix.metadata.dto.RawQueryRequest;
 import com.company.dbreactjmix.metadata.query.SqlBuilderService;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -25,15 +28,23 @@ public class MetadataApiController {
     private final MetadataJdbcService metadataJdbcService;
     private final SqlBuilderService sqlBuilderService;
     private final ConnectionConfigService connectionConfigService;
+    private final MetaSetSnapshotService metaSetSnapshotService;
 
     public MetadataApiController(
             MetadataJdbcService metadataJdbcService,
             SqlBuilderService sqlBuilderService,
-            ConnectionConfigService connectionConfigService
+            ConnectionConfigService connectionConfigService,
+            MetaSetSnapshotService metaSetSnapshotService
     ) {
         this.metadataJdbcService = metadataJdbcService;
         this.sqlBuilderService = sqlBuilderService;
         this.connectionConfigService = connectionConfigService;
+        this.metaSetSnapshotService = metaSetSnapshotService;
+    }
+
+    @GetMapping("/ping")
+    public Map<String, Object> ping() {
+        return Map.of("status", "ok");
     }
 
     @PostMapping("/query/preview")
@@ -85,6 +96,42 @@ public class MetadataApiController {
     public MetaPackDto buildMetaPack(@RequestBody DbConnectionRequest request) {
         try {
             return metadataJdbcService.buildMetaPack(request);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
+        }
+    }
+
+    @PostMapping("/metapack/save")
+    public Map<String, Object> saveMetaPack(@RequestBody DbConnectionRequest request) {
+        try {
+            return metaSetSnapshotService.saveSnapshot(request);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
+        }
+    }
+
+    @GetMapping("/metapack/versions")
+    public List<Map<String, Object>> listMetaPackVersions(@RequestParam("metaSetCode") String metaSetCode) {
+        try {
+            return metaSetSnapshotService.listVersions(metaSetCode);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
+        }
+    }
+
+    @GetMapping("/metapack/version")
+    public Map<String, Object> getMetaPackVersion(
+            @RequestParam("metaSetCode") String metaSetCode,
+            @RequestParam("versionNo") Integer versionNo
+    ) {
+        try {
+            return metaSetSnapshotService.getVersion(metaSetCode, versionNo);
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
         } catch (Exception e) {
