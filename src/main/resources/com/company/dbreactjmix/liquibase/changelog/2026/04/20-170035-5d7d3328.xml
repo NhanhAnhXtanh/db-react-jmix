@@ -29,6 +29,26 @@
         </createTable>
     </changeSet>
     <changeSet id="2" author="db-react-jmix">
+        <createTable tableName="META_PACK_SYNC">
+            <column name="ID" type="UUID">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_META_PACK_SYNC"/>
+            </column>
+            <column name="META_PACK_ID" type="UUID"/>
+            <column name="FIELD_DATA" type="CLOB"/>
+            <column name="HASH_DATA" type="CLOB"/>
+            <column name="SYNC_VERSION_NO" type="INT"/>
+            <column name="VERSION" type="INT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="DELETED_BY" type="VARCHAR(255)"/>
+            <column name="DELETED_DATE" type="${offsetDateTime.type}"/>
+            <column name="CREATED_BY" type="VARCHAR(255)"/>
+            <column name="CREATED_DATE" type="${offsetDateTime.type}"/>
+            <column name="LAST_MODIFIED_BY" type="VARCHAR(255)"/>
+            <column name="LAST_MODIFIED_DATE" type="${offsetDateTime.type}"/>
+        </createTable>
+    </changeSet>
+    <changeSet id="3" author="db-react-jmix">
         <createTable tableName="META_PACK_VERSION">
             <column name="ID" type="UUID">
                 <constraints nullable="false" primaryKey="true" primaryKeyName="PK_META_PACK_VERSION"/>
@@ -50,7 +70,7 @@
             <column name="DELETED_DATE" type="${offsetDateTime.type}"/>
         </createTable>
     </changeSet>
-    <changeSet id="3" author="db-react-jmix">
+    <changeSet id="4" author="db-react-jmix">
         <createTable tableName="META_SET">
             <column name="ID" type="UUID">
                 <constraints nullable="false" primaryKey="true" primaryKeyName="PK_META_SET"/>
@@ -72,7 +92,7 @@
             <column name="DELETED_DATE" type="${offsetDateTime.type}"/>
         </createTable>
     </changeSet>
-    <changeSet id="4" author="db-react-jmix">
+    <changeSet id="5" author="db-react-jmix">
         <createTable tableName="META_SET_SYNC">
             <column name="ID" type="UUID">
                 <constraints nullable="false" primaryKey="true" primaryKeyName="PK_META_SET_SYNC"/>
@@ -92,7 +112,7 @@
             <column name="LAST_MODIFIED_DATE" type="${offsetDateTime.type}"/>
         </createTable>
     </changeSet>
-    <changeSet id="5" author="db-react-jmix">
+    <changeSet id="6" author="db-react-jmix">
         <createTable tableName="META_SET_VERSION">
             <column name="ID" type="UUID">
                 <constraints nullable="false" primaryKey="true" primaryKeyName="PK_META_SET_VERSION"/>
@@ -114,7 +134,7 @@
             <column name="DELETED_DATE" type="${offsetDateTime.type}"/>
         </createTable>
     </changeSet>
-    <changeSet id="6" author="db-react-jmix" dbms="postgresql">
+    <changeSet id="7" author="db-react-jmix" dbms="postgresql">
         <createIndex indexName="IDX_META_PACK_CODE" tableName="META_PACK" unique="true">
             <column name="CODE"/>
         </createIndex>
@@ -123,7 +143,7 @@
             <append value="where DELETED_DATE is null"/>
         </modifySql>
     </changeSet>
-    <changeSet id="7" author="db-react-jmix">
+    <changeSet id="8" author="db-react-jmix">
         <createIndex indexName="IDX_META_PACK_VERSION_PACK" tableName="META_PACK_VERSION">
             <column name="META_PACK_ID"/>
         </createIndex>
@@ -132,7 +152,7 @@
                                  constraintName="FK_META_PACK_VERSION_ON_META_PACK" referencedColumnNames="ID"
                                  referencedTableName="META_PACK"/>
     </changeSet>
-    <changeSet id="8" author="db-react-jmix" dbms="postgresql">
+    <changeSet id="9" author="db-react-jmix" dbms="postgresql">
         <createIndex indexName="IDX_META_PACK_VERSION_UNIQUE" tableName="META_PACK_VERSION" unique="true">
             <column name="META_PACK_ID"/>
             <column name="VERSION_NO"/>
@@ -142,7 +162,7 @@
             <append value="where DELETED_DATE is null"/>
         </modifySql>
     </changeSet>
-    <changeSet id="9" author="db-react-jmix" dbms="postgresql">
+    <changeSet id="10" author="db-react-jmix" dbms="postgresql">
         <createIndex indexName="IDX_META_SET_CODE" tableName="META_SET" unique="true">
             <column name="CODE"/>
         </createIndex>
@@ -151,7 +171,7 @@
             <append value="where DELETED_DATE is null"/>
         </modifySql>
     </changeSet>
-    <changeSet id="10" author="db-react-jmix">
+    <changeSet id="11" author="db-react-jmix">
         <createIndex indexName="IDX_META_SET_VERSION_META_SET" tableName="META_SET_VERSION">
             <column name="META_SET_ID"/>
         </createIndex>
@@ -160,7 +180,7 @@
                                  constraintName="FK_META_SET_VERSION_ON_META_SET" referencedColumnNames="ID"
                                  referencedTableName="META_SET"/>
     </changeSet>
-    <changeSet id="11" author="db-react-jmix" dbms="postgresql">
+    <changeSet id="12" author="db-react-jmix" dbms="postgresql">
         <createIndex indexName="IDX_META_SET_VERSION_META_SET_VERSION_NO" tableName="META_SET_VERSION" unique="true">
             <column name="META_SET_ID"/>
             <column name="VERSION_NO"/>
@@ -170,12 +190,17 @@
             <append value="where DELETED_DATE is null"/>
         </modifySql>
     </changeSet>
-    <changeSet id="12" author="db-react-jmix">
+    <changeSet id="13" author="db-react-jmix">
+        <addForeignKeyConstraint baseColumnNames="META_PACK_ID" baseTableName="META_PACK_SYNC"
+                                 constraintName="FK_META_PACK_SYNC_ON_META_PACK" referencedColumnNames="ID"
+                                 referencedTableName="META_PACK"/>
+    </changeSet>
+    <changeSet id="14" author="db-react-jmix">
         <addForeignKeyConstraint baseColumnNames="META_PACK_ID" baseTableName="META_SET"
                                  constraintName="FK_META_SET_ON_META_PACK" referencedColumnNames="ID"
                                  referencedTableName="META_PACK"/>
     </changeSet>
-    <changeSet id="13" author="db-react-jmix">
+    <changeSet id="15" author="db-react-jmix">
         <addForeignKeyConstraint baseColumnNames="META_SET_ID" baseTableName="META_SET_SYNC"
                                  constraintName="FK_META_SET_SYNC_ON_META_SET" referencedColumnNames="ID"
                                  referencedTableName="META_SET"/>
