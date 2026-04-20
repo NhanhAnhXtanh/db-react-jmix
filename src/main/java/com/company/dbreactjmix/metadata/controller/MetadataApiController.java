@@ -7,6 +7,7 @@ import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.QueryBuildRequest;
 import com.company.dbreactjmix.metadata.dto.RawQueryRequest;
+import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
 import com.company.dbreactjmix.metadata.query.SqlBuilderService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -104,7 +105,7 @@ public class MetadataApiController {
     }
 
     @PostMapping("/metapack/save")
-    public Map<String, Object> saveMetaPack(@RequestBody DbConnectionRequest request) {
+    public Map<String, Object> saveMetaPack(@RequestBody SaveMetaPackRequest request) {
         try {
             return metaSetSnapshotService.saveSnapshot(request);
         } catch (IllegalArgumentException e) {

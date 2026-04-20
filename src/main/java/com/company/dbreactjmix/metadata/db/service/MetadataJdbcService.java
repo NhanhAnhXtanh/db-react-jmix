@@ -190,9 +190,9 @@ public class MetadataJdbcService {
                 RelationItemDto item = new RelationItemDto();
                 item.setId(sourceTable + "." + sourceField + "->" + targetTable + "." + targetField);
                 item.setSourceTable(sourceTable);
-                item.setSourceField(sourceField);
+                item.setSourceField(sourceTable + "." + sourceField);
                 item.setTargetTable(targetTable);
-                item.setTargetField(targetField);
+                item.setTargetField(targetTable + "." + targetField);
                 item.setType("N:1");
                 rows.add(item);
             }

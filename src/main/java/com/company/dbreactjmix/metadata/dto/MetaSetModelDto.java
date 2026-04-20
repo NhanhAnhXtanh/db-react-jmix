@@ -1,5 +1,7 @@
 package com.company.dbreactjmix.metadata.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 public class MetaSetModelDto {
 
     private String id;
@@ -69,18 +71,22 @@ public class MetaSetModelDto {
         this.description = description;
     }
 
+    @JsonProperty("isNull")
     public boolean isNull() {
         return isNull;
     }
 
+    @JsonProperty("isNull")
     public void setNull(boolean aNull) {
         isNull = aNull;
     }
 
+    @JsonProperty("isPrimaryKey")
     public boolean isPrimaryKey() {
         return isPrimaryKey;
     }
 
+    @JsonProperty("isPrimaryKey")
     public void setPrimaryKey(boolean primaryKey) {
         isPrimaryKey = primaryKey;
     }

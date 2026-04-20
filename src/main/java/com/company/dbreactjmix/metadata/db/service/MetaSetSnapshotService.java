@@ -1,7 +1,9 @@
 package com.company.dbreactjmix.metadata.db.service;
 
-import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
+import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
+import com.company.dbreactjmix.metadata.dto.RelationItemDto;
+import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSet;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSetVersion;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -19,28 +21,21 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 @Service
 public class MetaSetSnapshotService {
 
-    private final MetadataJdbcService metadataJdbcService;
-    private final ConnectionConfigService connectionConfigService;
     private final DataManager dataManager;
     private final SystemAuthenticator systemAuthenticator;
     private final ObjectMapper objectMapper;
 
-    public MetaSetSnapshotService(
-            MetadataJdbcService metadataJdbcService,
-            ConnectionConfigService connectionConfigService,
-            DataManager dataManager,
-            SystemAuthenticator systemAuthenticator
-    ) {
-        this.metadataJdbcService = metadataJdbcService;
-        this.connectionConfigService = connectionConfigService;
+    public MetaSetSnapshotService(DataManager dataManager, SystemAuthenticator systemAuthenticator) {
         this.dataManager = dataManager;
         this.systemAuthenticator = systemAuthenticator;
         this.objectMapper = JsonMapper.builder()
@@ -50,15 +45,15 @@ public class MetaSetSnapshotService {
     }
 
     @Transactional
-    public Map<String, Object> saveSnapshot(DbConnectionRequest request) {
-        validateRequest(request);
+    public Map<String, Object> saveSnapshot(SaveMetaPackRequest request) {
+        validateSaveRequest(request);
 
-        MetaPackDto metaPack = metadataJdbcService.buildMetaPack(request);
+        MetaPackDto metaPack = request.getMetaPack();
         String canonicalJson = toCanonicalJson(metaPack);
-        String hash = sha256(canonicalJson);
+        String hash = toStructuralHash(metaPack);
 
         return systemAuthenticator.withSystem(() -> {
-            MetaSet metaSet = findOrCreateMetaSet(request);
+            MetaSet metaSet = findOrCreateMetaSet(request.getMetaSetCode(), request.getMetaSetName());
             MetaSetVersion latestVersion = findLatestVersion(metaSet);
             boolean changed = latestVersion == null || !hash.equals(latestVersion.getHashData());
 
@@ -141,8 +136,7 @@ public class MetaSetSnapshotService {
         });
     }
 
-    private MetaSet findOrCreateMetaSet(DbConnectionRequest request) {
-        String code = buildMetaSetCode(request);
+    private MetaSet findOrCreateMetaSet(String code, String name) {
         MetaSet existing = dataManager.load(MetaSet.class)
                 .query("e.code = :code")
                 .parameter("code", code)
@@ -151,8 +145,8 @@ public class MetaSetSnapshotService {
 
         MetaSet metaSet = existing != null ? existing : dataManager.create(MetaSet.class);
         metaSet.setCode(code);
-        metaSet.setName(buildMetaSetName(request));
-        metaSet.setDescription("Metadata snapshot for " + buildMetaSetName(request));
+        metaSet.setName(name != null ? name : code);
+        metaSet.setDescription("Metadata snapshot for " + (name != null ? name : code));
         return dataManager.save(metaSet);
     }
 
@@ -165,19 +159,58 @@ public class MetaSetSnapshotService {
                 .orElse(null);
     }
 
-    private String buildMetaSetCode(DbConnectionRequest request) {
-        return connectionConfigService.buildCode(request) + "-" + resolveSchema(request).toLowerCase(Locale.ROOT);
-    }
-
-    private String buildMetaSetName(DbConnectionRequest request) {
-        return request.getDbName() + "." + resolveSchema(request);
-    }
-
-    private String resolveSchema(DbConnectionRequest request) {
-        if (request.getSchema() != null && !request.getSchema().isBlank()) {
-            return request.getSchema().trim();
+    // Hash chỉ dùng structural fields: bỏ qua description, comment
+    private String toStructuralHash(MetaPackDto metaPack) {
+        MetaPackDto.MetaPackContent content = metaPack.getMetaPack();
+        if (content == null) {
+            return sha256("{}");
         }
-        return request.getDatabaseType() != null && "POSTGRES".equals(request.getDatabaseType().name()) ? "public" : "default";
+
+        List<Map<String, Object>> structuralSchema = content.getSchema() == null ? List.of()
+                : content.getSchema().stream()
+                        .<Map<String, Object>>map(this::toStructuralSchemaEntry)
+                        .sorted(Comparator.comparing(m -> String.valueOf(m.get("id"))))
+                        .collect(Collectors.toList());
+
+        List<Map<String, Object>> structuralRelations = content.getRelations() == null ? List.of()
+                : content.getRelations().stream()
+                        .<Map<String, Object>>map(this::toStructuralRelationEntry)
+                        .sorted(Comparator.comparing(m -> String.valueOf(m.get("id"))))
+                        .collect(Collectors.toList());
+
+        Map<String, Object> structural = new TreeMap<>();
+        structural.put("relations", structuralRelations);
+        structural.put("schema", structuralSchema);
+
+        try {
+            return sha256(objectMapper.writeValueAsString(structural));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Cannot compute structural hash", e);
+        }
+    }
+
+    private Map<String, Object> toStructuralSchemaEntry(MetaSetModelDto field) {
+        Map<String, Object> s = new TreeMap<>();
+        s.put("code", field.getCode());
+        s.put("dataType", field.getDataType());
+        s.put("id", field.getId());
+        s.put("isNull", field.isNull());
+        s.put("isPrimaryKey", field.isPrimaryKey());
+        s.put("name", field.getName());
+        s.put("path", field.getPath());
+        s.put("path_parent", field.getPath_parent());
+        return s;
+    }
+
+    private Map<String, Object> toStructuralRelationEntry(RelationItemDto rel) {
+        Map<String, Object> r = new TreeMap<>();
+        r.put("id", rel.getId());
+        r.put("sourceField", rel.getSourceField());
+        r.put("sourceTable", rel.getSourceTable());
+        r.put("targetField", rel.getTargetField());
+        r.put("targetTable", rel.getTargetTable());
+        r.put("type", rel.getType());
+        return r;
     }
 
     private String toCanonicalJson(Object value) {
@@ -203,15 +236,15 @@ public class MetaSetSnapshotService {
         }
 
         if (node.isObject()) {
-            Map<String, JsonNode> ordered = new java.util.TreeMap<>();
+            Map<String, JsonNode> ordered = new TreeMap<>();
             node.fields().forEachRemaining(entry -> ordered.put(entry.getKey(), sortNode(entry.getValue())));
             return objectMapper.valueToTree(ordered);
         }
 
         if (node.isArray()) {
-            java.util.List<JsonNode> items = new java.util.ArrayList<>();
+            List<JsonNode> items = new ArrayList<>();
             node.forEach(child -> items.add(sortNode(child)));
-            items.sort(java.util.Comparator.comparing(this::safeCanonicalNode));
+            items.sort(Comparator.comparing(this::safeCanonicalNode));
             return objectMapper.valueToTree(items);
         }
 
@@ -240,15 +273,15 @@ public class MetaSetSnapshotService {
         }
     }
 
-    private void validateRequest(DbConnectionRequest request) {
+    private void validateSaveRequest(SaveMetaPackRequest request) {
         if (request == null) {
-            throw new IllegalArgumentException("Connection request is required");
+            throw new IllegalArgumentException("Request is required");
         }
-        if (request.getDatabaseType() == null) {
-            throw new IllegalArgumentException("databaseType is required");
+        if (request.getMetaSetCode() == null || request.getMetaSetCode().isBlank()) {
+            throw new IllegalArgumentException("metaSetCode is required");
         }
-        if (request.getDbName() == null || request.getDbName().isBlank()) {
-            throw new IllegalArgumentException("dbName is required");
+        if (request.getMetaPack() == null || request.getMetaPack().getMetaPack() == null) {
+            throw new IllegalArgumentException("metaPack is required");
         }
     }
 }
