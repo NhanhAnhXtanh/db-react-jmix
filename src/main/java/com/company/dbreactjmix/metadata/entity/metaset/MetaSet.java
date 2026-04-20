@@ -15,7 +15,9 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 @JmixEntity
-@Table(name = "META_SET")
+@Table(name = "META_SET", indexes = {
+        @Index(name = "IDX_META_SET_CODE", columnList = "CODE", unique = true)
+})
 @Entity
 public class MetaSet {
     @JmixGeneratedValue
@@ -32,6 +34,17 @@ public class MetaSet {
 
     @Column(name = "DESCRIPTION")
     private String description;
+
+    @Column(name = "CURRENT_VERSION_NO")
+    private Integer currentVersionNo;
+
+    @Lob
+    @Column(name = "CURRENT_HASH_DATA")
+    private String currentHashData;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "META_PACK_ID")
+    private MetaPack metaPack;
 
     @Column(name = "VERSION", nullable = false)
     @Version
@@ -61,12 +74,36 @@ public class MetaSet {
     @Column(name = "DELETED_DATE")
     private OffsetDateTime deletedDate;
 
+    public MetaPack getMetaPack() {
+        return metaPack;
+    }
+
+    public void setMetaPack(MetaPack metaPack) {
+        this.metaPack = metaPack;
+    }
+
     public String getDescription() {
         return description;
     }
 
     public void setDescription(String description) {
         this.description = description;
+    }
+
+    public Integer getCurrentVersionNo() {
+        return currentVersionNo;
+    }
+
+    public void setCurrentVersionNo(Integer currentVersionNo) {
+        this.currentVersionNo = currentVersionNo;
+    }
+
+    public String getCurrentHashData() {
+        return currentHashData;
+    }
+
+    public void setCurrentHashData(String currentHashData) {
+        this.currentHashData = currentHashData;
     }
 
     public String getName() {
