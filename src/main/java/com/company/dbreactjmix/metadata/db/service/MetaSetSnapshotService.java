@@ -3,6 +3,8 @@ package com.company.dbreactjmix.metadata.db.service;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
 import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
+import com.company.dbreactjmix.metadata.entity.metaset.MetaPack;
+import com.company.dbreactjmix.metadata.entity.metaset.MetaPackVersion;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSet;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSetVersion;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -61,6 +63,7 @@ public class MetaSetSnapshotService {
                 .filter(f -> f.getPath_parent() != null)
                 .collect(Collectors.groupingBy(MetaSetModelDto::getPath_parent));
 
+        // 1. Lưu từng table → MetaSet + MetaSetVersion
         List<Map<String, Object>> tableResults = new ArrayList<>();
         int changedCount = 0;
 
@@ -74,10 +77,15 @@ public class MetaSetSnapshotService {
             if (Boolean.TRUE.equals(result.get("changed"))) changedCount++;
         }
 
+        // 2. Lưu MetaPack + MetaPackVersion (full schema + relations)
+        Map<String, Object> packResult = saveMetaPackSnapshot(
+                request.getMetaSetCode(), request.getMetaSetName(), content, tables, columnsByTable);
+
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("metaSetCode", request.getMetaSetCode());
-        response.put("changed", changedCount > 0);
+        response.put("changed", changedCount > 0 || Boolean.TRUE.equals(packResult.get("changed")));
         response.put("savedCount", changedCount);
+        response.put("packVersionNo", packResult.get("versionNo"));
         response.put("tables", tableResults);
         return response;
     }
@@ -111,6 +119,92 @@ public class MetaSetSnapshotService {
             result.put("versionNo", savedVersion != null ? savedVersion.getVersionNo() : null);
             return result;
         });
+    }
+
+    private Map<String, Object> saveMetaPackSnapshot(
+            String packCode, String packName,
+            MetaPackDto.MetaPackContent content,
+            List<MetaSetModelDto> tables,
+            Map<String, List<MetaSetModelDto>> columnsByTable) {
+
+        String canonicalJson = toCanonicalJson(content);
+        String hash = toPackHash(content);
+
+        return systemAuthenticator.withSystem(() -> {
+            MetaPack metaPack = findOrCreateMetaPack(packCode, packName);
+            MetaPackVersion latestVersion = findLatestPackVersion(metaPack);
+            boolean changed = latestVersion == null || !hash.equals(latestVersion.getHashData());
+
+            MetaPackVersion savedVersion = latestVersion;
+            if (changed) {
+                savedVersion = dataManager.create(MetaPackVersion.class);
+                savedVersion.setMetaPack(metaPack);
+                savedVersion.setFieldData(canonicalJson);
+                savedVersion.setHashData(hash);
+                savedVersion.setVersionNo(latestVersion == null ? 1 : latestVersion.getVersionNo() + 1);
+                savedVersion = dataManager.save(savedVersion);
+            }
+
+            metaPack.setCurrentVersionNo(savedVersion != null ? savedVersion.getVersionNo() : null);
+            metaPack.setCurrentHashData(hash);
+            metaPack = dataManager.save(metaPack);
+
+            // Link các MetaSet thuộc pack này
+            final MetaPack finalPack = metaPack;
+            for (MetaSetModelDto table : tables) {
+                String tableCode = packCode + "-" + table.getCode();
+                dataManager.load(MetaSet.class)
+                        .query("e.code = :code")
+                        .parameter("code", tableCode)
+                        .optional()
+                        .ifPresent(ms -> {
+                            ms.setMetaPack(finalPack);
+                            dataManager.save(ms);
+                        });
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("metaPackCode", packCode);
+            result.put("changed", changed);
+            result.put("versionNo", savedVersion != null ? savedVersion.getVersionNo() : null);
+            return result;
+        });
+    }
+
+    private MetaPack findOrCreateMetaPack(String code, String name) {
+        MetaPack existing = dataManager.load(MetaPack.class)
+                .query("e.code = :code")
+                .parameter("code", code)
+                .optional()
+                .orElse(null);
+
+        MetaPack pack = existing != null ? existing : dataManager.create(MetaPack.class);
+        pack.setCode(code);
+        pack.setName(name != null ? name : code);
+        return dataManager.save(pack);
+    }
+
+    private MetaPackVersion findLatestPackVersion(MetaPack metaPack) {
+        return dataManager.load(MetaPackVersion.class)
+                .query("e.metaPack = :pack order by e.versionNo desc")
+                .parameter("pack", metaPack)
+                .maxResults(1)
+                .optional()
+                .orElse(null);
+    }
+
+    private String toPackHash(MetaPackDto.MetaPackContent content) {
+        List<MetaSetModelDto> schema = content.getSchema() != null ? content.getSchema() : List.of();
+        List<Map<String, Object>> structural = schema.stream()
+                .filter(f -> f.getPath_parent() != null)
+                .<Map<String, Object>>map(this::toStructuralEntry)
+                .sorted(Comparator.comparing(m -> String.valueOf(m.get("code"))))
+                .collect(Collectors.toList());
+        try {
+            return sha256(objectMapper.writeValueAsString(structural));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Cannot compute pack hash", e);
+        }
     }
 
     public List<Map<String, Object>> listVersions(String metaSetCode) {
