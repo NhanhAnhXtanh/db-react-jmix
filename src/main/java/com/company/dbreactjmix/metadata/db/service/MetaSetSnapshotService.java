@@ -597,6 +597,9 @@ public class MetaSetSnapshotService {
                         if (tableNode.has("metasetdata") && tableNode.get("metasetdata").isArray()) {
                             for (com.fasterxml.jackson.databind.JsonNode colNode : tableNode.get("metasetdata")) {
                                 MetaSetModelDto col = storageMapper.treeToValue(colNode, MetaSetModelDto.class);
+                                String fullPath = tableName + "." + col.getCode();
+                                col.setId(fullPath);
+                                col.setPath(fullPath);
                                 col.setPath_parent(tableName);
                                 schema.add(col);
                             }
