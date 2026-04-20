@@ -2,11 +2,11 @@ package com.company.dbreactjmix.metadata.db.service;
 
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
-import com.company.dbreactjmix.metadata.dto.RelationItemDto;
 import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSet;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSetVersion;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -44,16 +44,50 @@ public class MetaSetSnapshotService {
                 .build();
     }
 
+    // Mỗi table trong schema = 1 MetaSet riêng
+    // fieldData chỉ lưu columns của table đó
     @Transactional
     public Map<String, Object> saveSnapshot(SaveMetaPackRequest request) {
         validateSaveRequest(request);
 
-        MetaPackDto metaPack = request.getMetaPack();
-        String canonicalJson = toCanonicalJson(metaPack);
-        String hash = toStructuralHash(metaPack);
+        MetaPackDto.MetaPackContent content = request.getMetaPack();
+        List<MetaSetModelDto> allSchema = content.getSchema() != null ? content.getSchema() : List.of();
+
+        List<MetaSetModelDto> tables = allSchema.stream()
+                .filter(f -> f.getPath_parent() == null)
+                .collect(Collectors.toList());
+
+        Map<String, List<MetaSetModelDto>> columnsByTable = allSchema.stream()
+                .filter(f -> f.getPath_parent() != null)
+                .collect(Collectors.groupingBy(MetaSetModelDto::getPath_parent));
+
+        List<Map<String, Object>> tableResults = new ArrayList<>();
+        int changedCount = 0;
+
+        for (MetaSetModelDto table : tables) {
+            List<MetaSetModelDto> columns = columnsByTable.getOrDefault(table.getCode(), List.of());
+            String tableCode = request.getMetaSetCode() + "-" + table.getCode();
+            String tableName = request.getMetaSetName() + "." + (table.getName() != null ? table.getName() : table.getCode());
+
+            Map<String, Object> result = saveTableSnapshot(tableCode, tableName, columns);
+            tableResults.add(result);
+            if (Boolean.TRUE.equals(result.get("changed"))) changedCount++;
+        }
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("metaSetCode", request.getMetaSetCode());
+        response.put("changed", changedCount > 0);
+        response.put("savedCount", changedCount);
+        response.put("tables", tableResults);
+        return response;
+    }
+
+    private Map<String, Object> saveTableSnapshot(String code, String name, List<MetaSetModelDto> columns) {
+        String canonicalJson = toCanonicalJson(columns);
+        String hash = toColumnsHash(columns);
 
         return systemAuthenticator.withSystem(() -> {
-            MetaSet metaSet = findOrCreateMetaSet(request.getMetaSetCode(), request.getMetaSetName());
+            MetaSet metaSet = findOrCreateMetaSet(code, name);
             MetaSetVersion latestVersion = findLatestVersion(metaSet);
             boolean changed = latestVersion == null || !hash.equals(latestVersion.getHashData());
 
@@ -69,18 +103,13 @@ public class MetaSetSnapshotService {
 
             metaSet.setCurrentVersionNo(savedVersion != null ? savedVersion.getVersionNo() : null);
             metaSet.setCurrentHashData(hash);
-            metaSet = dataManager.save(metaSet);
+            dataManager.save(metaSet);
 
-            Map<String, Object> response = new LinkedHashMap<>();
-            response.put("metaSetId", metaSet.getId());
-            response.put("metaSetCode", metaSet.getCode());
-            response.put("changed", changed);
-            response.put("hash", hash);
-            response.put("versionId", savedVersion != null ? savedVersion.getId() : null);
-            response.put("versionNo", savedVersion != null ? savedVersion.getVersionNo() : null);
-            response.put("currentVersionNo", metaSet.getCurrentVersionNo());
-            response.put("metaPack", metaPack);
-            return response;
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("metaSetCode", code);
+            result.put("changed", changed);
+            result.put("versionNo", savedVersion != null ? savedVersion.getVersionNo() : null);
+            return result;
         });
     }
 
@@ -125,13 +154,13 @@ public class MetaSetSnapshotService {
                     .optional()
                     .orElseThrow(() -> new IllegalArgumentException("MetaSet version not found"));
 
-            MetaPackDto metaPack = fromCanonicalJson(version.getFieldData());
+            List<MetaSetModelDto> columns = fromCanonicalJson(version.getFieldData());
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("metaSetCode", metaSetCode);
             response.put("versionId", version.getId());
             response.put("versionNo", version.getVersionNo());
             response.put("hash", version.getHashData());
-            response.put("metaPack", metaPack);
+            response.put("columns", columns);
             return response;
         });
     }
@@ -146,7 +175,6 @@ public class MetaSetSnapshotService {
         MetaSet metaSet = existing != null ? existing : dataManager.create(MetaSet.class);
         metaSet.setCode(code);
         metaSet.setName(name != null ? name : code);
-        metaSet.setDescription("Metadata snapshot for " + (name != null ? name : code));
         return dataManager.save(metaSet);
     }
 
@@ -159,58 +187,26 @@ public class MetaSetSnapshotService {
                 .orElse(null);
     }
 
-    // Hash chỉ dùng structural fields: bỏ qua description, comment
-    private String toStructuralHash(MetaPackDto metaPack) {
-        MetaPackDto.MetaPackContent content = metaPack.getMetaPack();
-        if (content == null) {
-            return sha256("{}");
-        }
-
-        List<Map<String, Object>> structuralSchema = content.getSchema() == null ? List.of()
-                : content.getSchema().stream()
-                        .<Map<String, Object>>map(this::toStructuralSchemaEntry)
-                        .sorted(Comparator.comparing(m -> String.valueOf(m.get("id"))))
-                        .collect(Collectors.toList());
-
-        List<Map<String, Object>> structuralRelations = content.getRelations() == null ? List.of()
-                : content.getRelations().stream()
-                        .<Map<String, Object>>map(this::toStructuralRelationEntry)
-                        .sorted(Comparator.comparing(m -> String.valueOf(m.get("id"))))
-                        .collect(Collectors.toList());
-
-        Map<String, Object> structural = new TreeMap<>();
-        structural.put("relations", structuralRelations);
-        structural.put("schema", structuralSchema);
-
+    private String toColumnsHash(List<MetaSetModelDto> columns) {
+        List<Map<String, Object>> structural = columns.stream()
+                .<Map<String, Object>>map(this::toStructuralEntry)
+                .sorted(Comparator.comparing(m -> String.valueOf(m.get("code"))))
+                .collect(Collectors.toList());
         try {
             return sha256(objectMapper.writeValueAsString(structural));
         } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Cannot compute structural hash", e);
+            throw new IllegalStateException("Cannot compute columns hash", e);
         }
     }
 
-    private Map<String, Object> toStructuralSchemaEntry(MetaSetModelDto field) {
+    private Map<String, Object> toStructuralEntry(MetaSetModelDto field) {
         Map<String, Object> s = new TreeMap<>();
         s.put("code", field.getCode());
         s.put("dataType", field.getDataType());
-        s.put("id", field.getId());
         s.put("isNull", field.isNull());
         s.put("isPrimaryKey", field.isPrimaryKey());
         s.put("name", field.getName());
-        s.put("path", field.getPath());
-        s.put("path_parent", field.getPath_parent());
         return s;
-    }
-
-    private Map<String, Object> toStructuralRelationEntry(RelationItemDto rel) {
-        Map<String, Object> r = new TreeMap<>();
-        r.put("id", rel.getId());
-        r.put("sourceField", rel.getSourceField());
-        r.put("sourceTable", rel.getSourceTable());
-        r.put("targetField", rel.getTargetField());
-        r.put("targetTable", rel.getTargetTable());
-        r.put("type", rel.getType());
-        return r;
     }
 
     private String toCanonicalJson(Object value) {
@@ -222,40 +218,38 @@ public class MetaSetSnapshotService {
         }
     }
 
-    private MetaPackDto fromCanonicalJson(String json) {
+    private List<MetaSetModelDto> fromCanonicalJson(String json) {
         try {
-            return objectMapper.readValue(json, MetaPackDto.class);
+            return objectMapper.readValue(json, new TypeReference<List<MetaSetModelDto>>() {});
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Cannot deserialize metadata snapshot", e);
         }
     }
 
     private JsonNode sortNode(JsonNode node) {
-        if (node == null || node.isNull() || node.isValueNode()) {
-            return node;
-        }
+        if (node == null || node.isNull() || node.isValueNode()) return node;
 
         if (node.isObject()) {
             Map<String, JsonNode> ordered = new TreeMap<>();
-            node.fields().forEachRemaining(entry -> ordered.put(entry.getKey(), sortNode(entry.getValue())));
+            node.fields().forEachRemaining(e -> ordered.put(e.getKey(), sortNode(e.getValue())));
             return objectMapper.valueToTree(ordered);
         }
 
         if (node.isArray()) {
             List<JsonNode> items = new ArrayList<>();
             node.forEach(child -> items.add(sortNode(child)));
-            items.sort(Comparator.comparing(this::safeCanonicalNode));
+            items.sort(Comparator.comparing(this::safeCanonical));
             return objectMapper.valueToTree(items);
         }
 
         return node;
     }
 
-    private String safeCanonicalNode(JsonNode node) {
+    private String safeCanonical(JsonNode node) {
         try {
             return objectMapper.writeValueAsString(node);
         } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Cannot canonicalize metadata node", e);
+            throw new IllegalStateException("Cannot canonicalize node", e);
         }
     }
 
@@ -264,24 +258,18 @@ public class MetaSetSnapshotService {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
             StringBuilder builder = new StringBuilder(bytes.length * 2);
-            for (byte item : bytes) {
-                builder.append(String.format("%02x", item));
-            }
+            for (byte item : bytes) builder.append(String.format("%02x", item));
             return builder.toString();
         } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 algorithm is not available", e);
+            throw new IllegalStateException("SHA-256 not available", e);
         }
     }
 
     private void validateSaveRequest(SaveMetaPackRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("Request is required");
-        }
-        if (request.getMetaSetCode() == null || request.getMetaSetCode().isBlank()) {
+        if (request == null) throw new IllegalArgumentException("Request is required");
+        if (request.getMetaSetCode() == null || request.getMetaSetCode().isBlank())
             throw new IllegalArgumentException("metaSetCode is required");
-        }
-        if (request.getMetaPack() == null || request.getMetaPack().getMetaPack() == null) {
+        if (request.getMetaPack() == null)
             throw new IllegalArgumentException("metaPack is required");
-        }
     }
 }

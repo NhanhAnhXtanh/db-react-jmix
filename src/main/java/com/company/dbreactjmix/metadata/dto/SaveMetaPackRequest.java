@@ -4,7 +4,7 @@ public class SaveMetaPackRequest {
 
     private String metaSetCode;
     private String metaSetName;
-    private MetaPackDto metaPack;
+    private MetaPackDto.MetaPackContent metaPack;
 
     public String getMetaSetCode() {
         return metaSetCode;
@@ -22,11 +22,11 @@ public class SaveMetaPackRequest {
         this.metaSetName = metaSetName;
     }
 
-    public MetaPackDto getMetaPack() {
+    public MetaPackDto.MetaPackContent getMetaPack() {
         return metaPack;
     }
 
-    public void setMetaPack(MetaPackDto metaPack) {
+    public void setMetaPack(MetaPackDto.MetaPackContent metaPack) {
         this.metaPack = metaPack;
     }
 }
