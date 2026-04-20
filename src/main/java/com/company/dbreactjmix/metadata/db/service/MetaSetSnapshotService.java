@@ -2,10 +2,15 @@ package com.company.dbreactjmix.metadata.db.service;
 
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
+import com.company.dbreactjmix.metadata.dto.RelationItemDto;
 import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
+import com.company.dbreactjmix.metadata.dto.SyncCheckRequest;
+import com.company.dbreactjmix.metadata.dto.SyncConfirmRequest;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaPack;
+import com.company.dbreactjmix.metadata.entity.metaset.MetaPackSync;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaPackVersion;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSet;
+import com.company.dbreactjmix.metadata.entity.metaset.MetaSetSync;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSetVersion;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -27,6 +32,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 
@@ -35,15 +41,20 @@ public class MetaSetSnapshotService {
 
     private final DataManager dataManager;
     private final SystemAuthenticator systemAuthenticator;
+    private final MetadataJdbcService metadataJdbcService;
     private final ObjectMapper objectMapper;
+    private final ObjectMapper storageMapper;
 
-    public MetaSetSnapshotService(DataManager dataManager, SystemAuthenticator systemAuthenticator) {
+    public MetaSetSnapshotService(DataManager dataManager, SystemAuthenticator systemAuthenticator,
+                                  MetadataJdbcService metadataJdbcService) {
         this.dataManager = dataManager;
         this.systemAuthenticator = systemAuthenticator;
+        this.metadataJdbcService = metadataJdbcService;
         this.objectMapper = JsonMapper.builder()
                 .enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
                 .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
                 .build();
+        this.storageMapper = new com.fasterxml.jackson.databind.ObjectMapper();
     }
 
     // Mỗi table trong schema = 1 MetaSet riêng
@@ -72,14 +83,14 @@ public class MetaSetSnapshotService {
             String tableCode = request.getMetaSetCode() + "-" + table.getCode();
             String tableName = request.getMetaSetName() + "." + (table.getName() != null ? table.getName() : table.getCode());
 
-            Map<String, Object> result = saveTableSnapshot(tableCode, tableName, columns);
+            Map<String, Object> result = saveTableSnapshot(tableCode, tableName, table.getCode(), columns);
             tableResults.add(result);
             if (Boolean.TRUE.equals(result.get("changed"))) changedCount++;
         }
 
         // 2. Lưu MetaPack + MetaPackVersion (full schema + relations)
         Map<String, Object> packResult = saveMetaPackSnapshot(
-                request.getMetaSetCode(), request.getMetaSetName(), content, tables, columnsByTable);
+                request.getMetaSetCode(), request.getMetaSetName(), content, tables, columnsByTable, false);
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("metaSetCode", request.getMetaSetCode());
@@ -90,8 +101,7 @@ public class MetaSetSnapshotService {
         return response;
     }
 
-    private Map<String, Object> saveTableSnapshot(String code, String name, List<MetaSetModelDto> columns) {
-        String canonicalJson = toCanonicalJson(columns);
+    private Map<String, Object> saveTableSnapshot(String code, String name, String tableCode, List<MetaSetModelDto> columns) {
         String hash = toColumnsHash(columns);
 
         return systemAuthenticator.withSystem(() -> {
@@ -100,18 +110,23 @@ public class MetaSetSnapshotService {
             boolean changed = latestVersion == null || !hash.equals(latestVersion.getHashData());
 
             MetaSetVersion savedVersion = latestVersion;
+            String savedFieldData = latestVersion != null ? latestVersion.getFieldData() : null;
             if (changed) {
+                int nextVersionNo = latestVersion == null ? 1 : latestVersion.getVersionNo() + 1;
+                savedFieldData = toTableFieldData(tableCode, nextVersionNo, columns);
                 savedVersion = dataManager.create(MetaSetVersion.class);
                 savedVersion.setMetaSet(metaSet);
-                savedVersion.setFieldData(canonicalJson);
+                savedVersion.setFieldData(savedFieldData);
                 savedVersion.setHashData(hash);
-                savedVersion.setVersionNo(latestVersion == null ? 1 : latestVersion.getVersionNo() + 1);
+                savedVersion.setVersionNo(nextVersionNo);
                 savedVersion = dataManager.save(savedVersion);
             }
 
             metaSet.setCurrentVersionNo(savedVersion != null ? savedVersion.getVersionNo() : null);
             metaSet.setCurrentHashData(hash);
             dataManager.save(metaSet);
+
+            createMetaSetSyncIfAbsent(metaSet, savedFieldData, hash);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("metaSetCode", code);
@@ -121,13 +136,47 @@ public class MetaSetSnapshotService {
         });
     }
 
+    private void createMetaSetSyncIfAbsent(MetaSet metaSet, String fieldData, String hash) {
+        boolean exists = dataManager.load(MetaSetSync.class)
+                .query("e.metaSet = :ms")
+                .parameter("ms", metaSet)
+                .maxResults(1)
+                .optional()
+                .isPresent();
+        if (!exists) {
+            MetaSetSync sync = dataManager.create(MetaSetSync.class);
+            sync.setMetaSet(metaSet);
+            sync.setFieldData(fieldData);
+            sync.setHashData(hash);
+            sync.setSyncVersionNo(1);
+            dataManager.save(sync);
+        }
+    }
+
+    private void appendMetaSetSync(MetaSet metaSet, String fieldData, String hash) {
+        Integer maxNo = dataManager.load(MetaSetSync.class)
+                .query("e.metaSet = :ms order by e.syncVersionNo desc")
+                .parameter("ms", metaSet)
+                .maxResults(1)
+                .optional()
+                .map(MetaSetSync::getSyncVersionNo)
+                .orElse(null);
+        int nextNo = maxNo != null ? maxNo + 1 : 1;
+        MetaSetSync sync = dataManager.create(MetaSetSync.class);
+        sync.setMetaSet(metaSet);
+        sync.setFieldData(fieldData);
+        sync.setHashData(hash);
+        sync.setSyncVersionNo(nextNo);
+        dataManager.save(sync);
+    }
+
     private Map<String, Object> saveMetaPackSnapshot(
             String packCode, String packName,
             MetaPackDto.MetaPackContent content,
             List<MetaSetModelDto> tables,
-            Map<String, List<MetaSetModelDto>> columnsByTable) {
+            Map<String, List<MetaSetModelDto>> columnsByTable,
+            boolean appendSync) {
 
-        String canonicalJson = toCanonicalJson(content);
         String hash = toPackHash(content);
 
         return systemAuthenticator.withSystem(() -> {
@@ -136,12 +185,15 @@ public class MetaSetSnapshotService {
             boolean changed = latestVersion == null || !hash.equals(latestVersion.getHashData());
 
             MetaPackVersion savedVersion = latestVersion;
+            String fieldData = latestVersion != null ? latestVersion.getFieldData() : null;
             if (changed) {
+                int nextVersionNo = latestVersion == null ? 1 : latestVersion.getVersionNo() + 1;
+                fieldData = toPackFieldData(packCode, nextVersionNo, content, tables, columnsByTable);
                 savedVersion = dataManager.create(MetaPackVersion.class);
                 savedVersion.setMetaPack(metaPack);
-                savedVersion.setFieldData(canonicalJson);
+                savedVersion.setFieldData(fieldData);
                 savedVersion.setHashData(hash);
-                savedVersion.setVersionNo(latestVersion == null ? 1 : latestVersion.getVersionNo() + 1);
+                savedVersion.setVersionNo(nextVersionNo);
                 savedVersion = dataManager.save(savedVersion);
             }
 
@@ -163,12 +215,52 @@ public class MetaSetSnapshotService {
                         });
             }
 
+            if (appendSync) {
+                appendMetaPackSync(metaPack, fieldData, hash);
+            } else {
+                createMetaPackSyncIfAbsent(metaPack, fieldData, hash);
+            }
+
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("metaPackCode", packCode);
             result.put("changed", changed);
             result.put("versionNo", savedVersion != null ? savedVersion.getVersionNo() : null);
             return result;
         });
+    }
+
+    private void createMetaPackSyncIfAbsent(MetaPack metaPack, String fieldData, String hash) {
+        boolean exists = dataManager.load(MetaPackSync.class)
+                .query("e.metaPack = :mp")
+                .parameter("mp", metaPack)
+                .maxResults(1)
+                .optional()
+                .isPresent();
+        if (!exists) {
+            MetaPackSync sync = dataManager.create(MetaPackSync.class);
+            sync.setMetaPack(metaPack);
+            sync.setFieldData(fieldData);
+            sync.setHashData(hash);
+            sync.setSyncVersionNo(1);
+            dataManager.save(sync);
+        }
+    }
+
+    private void appendMetaPackSync(MetaPack metaPack, String fieldData, String hash) {
+        Integer maxNo = dataManager.load(MetaPackSync.class)
+                .query("e.metaPack = :mp order by e.syncVersionNo desc")
+                .parameter("mp", metaPack)
+                .maxResults(1)
+                .optional()
+                .map(MetaPackSync::getSyncVersionNo)
+                .orElse(null);
+        int nextNo = maxNo != null ? maxNo + 1 : 1;
+        MetaPackSync sync = dataManager.create(MetaPackSync.class);
+        sync.setMetaPack(metaPack);
+        sync.setFieldData(fieldData);
+        sync.setHashData(hash);
+        sync.setSyncVersionNo(nextNo);
+        dataManager.save(sync);
     }
 
     private MetaPack findOrCreateMetaPack(String code, String name) {
@@ -205,6 +297,46 @@ public class MetaSetSnapshotService {
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Cannot compute pack hash", e);
         }
+    }
+
+    public List<Map<String, Object>> listMetaPacks() {
+        return systemAuthenticator.withSystem(() -> {
+            List<MetaPack> packs = dataManager.load(MetaPack.class)
+                    .query("select e from MetaPack e order by e.name asc")
+                    .list();
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (MetaPack pack : packs) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("code", pack.getCode());
+                item.put("name", pack.getName());
+                item.put("currentVersionNo", pack.getCurrentVersionNo());
+                item.put("lastModifiedDate", pack.getLastModifiedDate());
+                result.add(item);
+            }
+            return result;
+        });
+    }
+
+    public List<Map<String, Object>> listPackVersions(String packCode) {
+        if (packCode == null || packCode.isBlank()) {
+            throw new IllegalArgumentException("packCode is required");
+        }
+        return systemAuthenticator.withSystem(() -> {
+            List<MetaPackVersion> versions = dataManager.load(MetaPackVersion.class)
+                    .query("e.metaPack.code = :code order by e.versionNo desc")
+                    .parameter("code", packCode)
+                    .list();
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (MetaPackVersion v : versions) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", v.getId());
+                item.put("versionNo", v.getVersionNo());
+                item.put("hash", v.getHashData());
+                item.put("createdDate", v.getCreatedDate());
+                result.add(item);
+            }
+            return result;
+        });
     }
 
     public List<Map<String, Object>> listVersions(String metaSetCode) {
@@ -312,9 +444,78 @@ public class MetaSetSnapshotService {
         }
     }
 
+    private String toPackFieldData(String packCode, int versionNo, MetaPackDto.MetaPackContent content,
+                                    List<MetaSetModelDto> tables, Map<String, List<MetaSetModelDto>> columnsByTable) {
+        List<Map<String, Object>> tableList = tables.stream().map(table -> {
+            List<MetaSetModelDto> columns = columnsByTable.getOrDefault(table.getCode(), List.of());
+            List<Map<String, Object>> simplified = columns.stream().map(col -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("code", col.getCode());
+                m.put("comment", col.getComment());
+                m.put("dataType", col.getDataType());
+                m.put("description", col.getDescription());
+                m.put("id", col.getCode());
+                m.put("isNull", col.isNull());
+                m.put("isPrimaryKey", col.isPrimaryKey());
+                m.put("name", col.getName());
+                m.put("path", col.getCode());
+                m.put("path_parent", null);
+                return m;
+            }).collect(Collectors.toList());
+            Map<String, Object> t = new LinkedHashMap<>();
+            t.put("table", table.getCode());
+            t.put("metasetdata", simplified);
+            return t;
+        }).collect(Collectors.toList());
+
+        Map<String, Object> wrapper = new LinkedHashMap<>();
+        wrapper.put("versionNo", versionNo);
+        wrapper.put("dataSource", content.getDataSource());
+        wrapper.put("tables", tableList);
+        wrapper.put("relations", content.getRelations());
+        try {
+            return storageMapper.writeValueAsString(wrapper);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Cannot serialize pack field data", e);
+        }
+    }
+
+    private String toTableFieldData(String tableCode, int versionNo, List<MetaSetModelDto> columns) {
+        List<Map<String, Object>> simplified = columns.stream().map(col -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("code", col.getCode());
+            m.put("comment", col.getComment());
+            m.put("dataType", col.getDataType());
+            m.put("description", col.getDescription());
+            m.put("id", col.getCode());
+            m.put("isNull", col.isNull());
+            m.put("isPrimaryKey", col.isPrimaryKey());
+            m.put("name", col.getName());
+            m.put("path", col.getCode());
+            m.put("path_parent", null);
+            return m;
+        }).collect(Collectors.toList());
+
+        Map<String, Object> wrapper = new LinkedHashMap<>();
+        wrapper.put("table", tableCode);
+        wrapper.put("versionNo", versionNo);
+        wrapper.put("metasetdata", simplified);
+        try {
+            return storageMapper.writeValueAsString(wrapper);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Cannot serialize table field data", e);
+        }
+    }
+
     private List<MetaSetModelDto> fromCanonicalJson(String json) {
         try {
-            return objectMapper.readValue(json, new TypeReference<List<MetaSetModelDto>>() {});
+            JsonNode root = objectMapper.readTree(json);
+            if (root.isArray()) {
+                return objectMapper.readValue(json, new TypeReference<List<MetaSetModelDto>>() {});
+            }
+            JsonNode metasetdata = root.get("metasetdata");
+            if (metasetdata == null || !metasetdata.isArray()) return List.of();
+            return objectMapper.readValue(metasetdata.toString(), new TypeReference<List<MetaSetModelDto>>() {});
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Cannot deserialize metadata snapshot", e);
         }
@@ -357,6 +558,209 @@ public class MetaSetSnapshotService {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 not available", e);
         }
+    }
+
+    public MetaPackDto getLatestPackSchema(String packCode) {
+        if (packCode == null || packCode.isBlank()) return null;
+        return systemAuthenticator.withSystem(() -> {
+            MetaPack pack = dataManager.load(MetaPack.class)
+                    .query("e.code = :code")
+                    .parameter("code", packCode)
+                    .optional()
+                    .orElse(null);
+            if (pack == null) return null;
+
+            MetaPackVersion latest = findLatestPackVersion(pack);
+            if (latest == null || latest.getFieldData() == null) return null;
+
+            try {
+                com.fasterxml.jackson.databind.JsonNode root = storageMapper.readTree(latest.getFieldData());
+                String dataSource = root.has("dataSource") ? root.get("dataSource").asText("postgres") : "postgres";
+
+                List<RelationItemDto> relations = new ArrayList<>();
+                if (root.has("relations") && root.get("relations").isArray()) {
+                    for (com.fasterxml.jackson.databind.JsonNode rel : root.get("relations")) {
+                        relations.add(storageMapper.treeToValue(rel, RelationItemDto.class));
+                    }
+                }
+
+                List<MetaSetModelDto> schema = new ArrayList<>();
+                if (root.has("tables") && root.get("tables").isArray()) {
+                    for (com.fasterxml.jackson.databind.JsonNode tableNode : root.get("tables")) {
+                        String tableName = tableNode.get("table").asText();
+                        MetaSetModelDto tableRow = new MetaSetModelDto();
+                        tableRow.setCode(tableName);
+                        tableRow.setId(tableName);
+                        tableRow.setPath(tableName);
+                        tableRow.setName(tableName);
+                        schema.add(tableRow);
+                        if (tableNode.has("metasetdata") && tableNode.get("metasetdata").isArray()) {
+                            for (com.fasterxml.jackson.databind.JsonNode colNode : tableNode.get("metasetdata")) {
+                                MetaSetModelDto col = storageMapper.treeToValue(colNode, MetaSetModelDto.class);
+                                col.setPath_parent(tableName);
+                                schema.add(col);
+                            }
+                        }
+                    }
+                }
+
+                MetaPackDto.MetaPackContent content = new MetaPackDto.MetaPackContent();
+                content.setVersion("1.0");
+                content.setDataSource(dataSource);
+                content.setSchema(schema);
+                content.setRelations(relations);
+
+                MetaPackDto dto = new MetaPackDto();
+                dto.setMetaPack(content);
+                return dto;
+            } catch (Exception e) {
+                return null;
+            }
+        });
+    }
+
+    public Map<String, Object> checkSync(SyncCheckRequest request) {
+        if (request.getMetaSetCode() == null || request.getMetaSetCode().isBlank())
+            throw new IllegalArgumentException("metaSetCode is required");
+
+        MetaPackDto currentPack = metadataJdbcService.buildMetaPack(request.getConnection());
+        MetaPackDto.MetaPackContent content = currentPack.getMetaPack();
+        List<MetaSetModelDto> allSchema = content.getSchema() != null ? content.getSchema() : List.of();
+
+        List<MetaSetModelDto> tables = allSchema.stream()
+                .filter(f -> f.getPath_parent() == null)
+                .collect(Collectors.toList());
+        Map<String, List<MetaSetModelDto>> columnsByTable = allSchema.stream()
+                .filter(f -> f.getPath_parent() != null)
+                .collect(Collectors.groupingBy(MetaSetModelDto::getPath_parent));
+
+        List<Map<String, Object>> diffs = systemAuthenticator.withSystem(() -> {
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (MetaSetModelDto table : tables) {
+                String tableCode = request.getMetaSetCode() + "-" + table.getCode();
+                List<MetaSetModelDto> currentCols = columnsByTable.getOrDefault(table.getCode(), List.of());
+                String currentHash = toColumnsHash(currentCols);
+
+                MetaSet metaSet = dataManager.load(MetaSet.class)
+                        .query("e.code = :code")
+                        .parameter("code", tableCode)
+                        .optional()
+                        .orElse(null);
+                if (metaSet == null) {
+                    List<String> allCols = currentCols.stream()
+                            .map(MetaSetModelDto::getCode).sorted().collect(Collectors.toList());
+                    Map<String, Object> newTableDiff = new LinkedHashMap<>();
+                    newTableDiff.put("tableCode", table.getCode());
+                    newTableDiff.put("isNewTable", true);
+                    newTableDiff.put("added", allCols);
+                    newTableDiff.put("removed", List.of());
+                    newTableDiff.put("changed", List.of());
+                    result.add(newTableDiff);
+                    continue;
+                }
+
+                MetaSetSync latestSync = dataManager.load(MetaSetSync.class)
+                        .query("e.metaSet = :ms order by e.syncVersionNo desc")
+                        .parameter("ms", metaSet)
+                        .maxResults(1)
+                        .optional()
+                        .orElse(null);
+                if (latestSync == null || latestSync.getFieldData() == null) continue;
+
+                if (currentHash.equals(latestSync.getHashData())) continue;
+
+                List<MetaSetModelDto> prevCols = fromCanonicalJson(latestSync.getFieldData());
+                result.add(computeDiff(table.getCode(), prevCols, currentCols));
+            }
+            return result;
+        });
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("hasChanges", !diffs.isEmpty());
+        response.put("diffs", diffs);
+        return response;
+    }
+
+    public Map<String, Object> confirmSync(SyncConfirmRequest request) {
+        if (request.getMetaSetCode() == null || request.getMetaSetCode().isBlank())
+            throw new IllegalArgumentException("metaSetCode is required");
+
+        MetaPackDto metaPackDto = metadataJdbcService.buildMetaPack(request.getConnection());
+        MetaPackDto.MetaPackContent content = metaPackDto.getMetaPack();
+        List<MetaSetModelDto> allSchema = content.getSchema() != null ? content.getSchema() : List.of();
+        List<MetaSetModelDto> tables = allSchema.stream()
+                .filter(f -> f.getPath_parent() == null)
+                .collect(Collectors.toList());
+        Map<String, List<MetaSetModelDto>> columnsByTable = allSchema.stream()
+                .filter(f -> f.getPath_parent() != null)
+                .collect(Collectors.groupingBy(MetaSetModelDto::getPath_parent));
+
+        // Lưu snapshot mới + append MetaPackSync
+        Map<String, Object> packResult = saveMetaPackSnapshot(
+                request.getMetaSetCode(), request.getMetaSetName(), content, tables, columnsByTable, true);
+
+        // Append MetaSetSync cho từng table
+        systemAuthenticator.withSystem(() -> {
+            for (MetaSetModelDto table : tables) {
+                String tableCode = request.getMetaSetCode() + "-" + table.getCode();
+                List<MetaSetModelDto> columns = columnsByTable.getOrDefault(table.getCode(), List.of());
+                String hash = toColumnsHash(columns);
+                dataManager.load(MetaSet.class)
+                        .query("e.code = :code")
+                        .parameter("code", tableCode)
+                        .optional()
+                        .ifPresent(metaSet -> {
+                            MetaSetVersion latestVer = findLatestVersion(metaSet);
+                            String fieldData = latestVer != null ? latestVer.getFieldData() : null;
+                            appendMetaSetSync(metaSet, fieldData, hash);
+                        });
+            }
+            return null;
+        });
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("changed", packResult.get("changed"));
+        result.put("savedCount", tables.size());
+        return result;
+    }
+
+    private Map<String, Object> computeDiff(String tableCode,
+                                             List<MetaSetModelDto> prev,
+                                             List<MetaSetModelDto> current) {
+        Map<String, MetaSetModelDto> prevMap = prev.stream()
+                .collect(Collectors.toMap(MetaSetModelDto::getCode, c -> c, (a, b) -> a));
+        Map<String, MetaSetModelDto> currentMap = current.stream()
+                .collect(Collectors.toMap(MetaSetModelDto::getCode, c -> c, (a, b) -> a));
+
+        List<String> added = currentMap.keySet().stream()
+                .filter(k -> !prevMap.containsKey(k))
+                .sorted()
+                .collect(Collectors.toList());
+
+        List<String> removed = prevMap.keySet().stream()
+                .filter(k -> !currentMap.containsKey(k))
+                .sorted()
+                .collect(Collectors.toList());
+
+        List<Map<String, Object>> changed = currentMap.entrySet().stream()
+                .filter(e -> prevMap.containsKey(e.getKey()))
+                .filter(e -> !Objects.equals(e.getValue().getDataType(),
+                        prevMap.get(e.getKey()).getDataType()))
+                .map(e -> {
+                    Map<String, Object> c = new LinkedHashMap<>();
+                    c.put("code", e.getKey());
+                    c.put("from", prevMap.get(e.getKey()).getDataType());
+                    c.put("to", e.getValue().getDataType());
+                    return c;
+                })
+                .collect(Collectors.toList());
+
+        Map<String, Object> diff = new LinkedHashMap<>();
+        diff.put("tableCode", tableCode);
+        diff.put("added", added);
+        diff.put("removed", removed);
+        diff.put("changed", changed);
+        return diff;
     }
 
     private void validateSaveRequest(SaveMetaPackRequest request) {

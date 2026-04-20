@@ -8,9 +8,12 @@ import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.QueryBuildRequest;
 import com.company.dbreactjmix.metadata.dto.RawQueryRequest;
 import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
+import com.company.dbreactjmix.metadata.dto.SyncCheckRequest;
+import com.company.dbreactjmix.metadata.dto.SyncConfirmRequest;
 import com.company.dbreactjmix.metadata.query.SqlBuilderService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -138,6 +141,69 @@ public class MetadataApiController {
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
         }
+    }
+
+    @GetMapping("/metapack/list")
+    public List<Map<String, Object>> listMetaPacks() {
+        try {
+            return metaSetSnapshotService.listMetaPacks();
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
+        }
+    }
+
+    @GetMapping("/metapack/{code}/latest-schema")
+    public MetaPackDto getLatestPackSchema(@PathVariable("code") String code) {
+        try {
+            MetaPackDto dto = metaSetSnapshotService.getLatestPackSchema(code);
+            if (dto == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No saved schema");
+            return dto;
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
+        }
+    }
+
+    @GetMapping("/metapack/{code}/versions")
+    public List<Map<String, Object>> listMetaPackVersionsByCode(@PathVariable("code") String code) {
+        try {
+            return metaSetSnapshotService.listPackVersions(code);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
+        }
+    }
+
+    @PostMapping("/sync/check")
+    public Map<String, Object> syncCheck(@RequestBody SyncCheckRequest request) {
+        try {
+            return metaSetSnapshotService.checkSync(request);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
+        }
+    }
+
+    @PostMapping("/sync/confirm")
+    public Map<String, Object> syncConfirm(@RequestBody SyncConfirmRequest request) {
+        try {
+            return metaSetSnapshotService.confirmSync(request);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
+        }
+    }
+
+    @GetMapping("/connections")
+    public List<Map<String, Object>> listConnections() {
+        return connectionConfigService.listAll()
+                .stream()
+                .map(connectionConfigService::toResponse)
+                .collect(java.util.stream.Collectors.toList());
     }
 
     @PostMapping("/connection")

@@ -34,6 +34,9 @@ public class MetaSetSync {
     @Lob
     private String hashData;
 
+    @Column(name = "SYNC_VERSION_NO")
+    private Integer syncVersionNo;
+
     @Column(name = "VERSION", nullable = false)
     @Version
     private Integer version;
@@ -140,6 +143,14 @@ public class MetaSetSync {
 
     public void setHashData(String hashData) {
         this.hashData = hashData;
+    }
+
+    public Integer getSyncVersionNo() {
+        return syncVersionNo;
+    }
+
+    public void setSyncVersionNo(Integer syncVersionNo) {
+        this.syncVersionNo = syncVersionNo;
     }
 
     public MetaSet getMetaSet() {

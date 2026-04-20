@@ -8,6 +8,7 @@ import io.jmix.core.security.SystemAuthenticator;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -19,6 +20,14 @@ public class ConnectionConfigService {
     public ConnectionConfigService(DataManager dataManager, SystemAuthenticator systemAuthenticator) {
         this.dataManager = dataManager;
         this.systemAuthenticator = systemAuthenticator;
+    }
+
+    public List<MetadataConnectionConfig> listAll() {
+        return systemAuthenticator.withSystem(() ->
+                dataManager.load(MetadataConnectionConfig.class)
+                        .all()
+                        .list()
+        );
     }
 
     public MetadataConnectionConfig save(DbConnectionRequest request) {
