@@ -180,10 +180,7 @@ public class MetadataApiController {
     public List<Map<String, Object>> getLatestMetaSync(@RequestParam("packCode") String packCode) {
         try {
             List<Map<String, Object>> data = metaSetSnapshotService.getLatestMetaSyncSchema(packCode);
-            if (data == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No MetaSync data");
-            return data;
-        } catch (ResponseStatusException e) {
-            throw e;
+            return data != null ? data : List.of();
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
         }
