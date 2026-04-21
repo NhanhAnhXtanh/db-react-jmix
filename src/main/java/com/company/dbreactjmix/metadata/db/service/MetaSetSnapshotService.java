@@ -795,7 +795,8 @@ public class MetaSetSnapshotService {
         }
     }
 
-    public MetaPackDto getLatestMetaSyncSchema(String packCode) {
+    // Trả về raw fieldData của từng MetaSync row mới nhất: [{ table, metaset: [...] }, ...]
+    public List<Map<String, Object>> getLatestMetaSyncSchema(String packCode) {
         if (packCode == null || packCode.isBlank()) return null;
         return systemAuthenticator.withSystem(() -> {
             MetaPack pack = dataManager.load(MetaPack.class)
@@ -811,9 +812,7 @@ public class MetaSetSnapshotService {
                     .list();
             if (metaSets.isEmpty()) return null;
 
-            List<MetaSetModelDto> schema = new ArrayList<>();
-            boolean hasAnySync = false;
-
+            List<Map<String, Object>> result = new ArrayList<>();
             for (MetaSet ms : metaSets) {
                 MetaSync latest = dataManager.load(MetaSync.class)
                         .query("e.metaSet = :ms order by e.syncVersionNo desc")
@@ -822,38 +821,14 @@ public class MetaSetSnapshotService {
                         .optional()
                         .orElse(null);
                 if (latest == null || latest.getFieldData() == null) continue;
-                hasAnySync = true;
                 try {
                     com.fasterxml.jackson.databind.JsonNode root = storageMapper.readTree(latest.getFieldData());
-                    String tableName = root.has("table") ? root.get("table").asText() : ms.getCode();
-
-                    MetaSetModelDto tableRow = new MetaSetModelDto();
-                    tableRow.setCode(tableName);
-                    tableRow.setId(tableName);
-                    tableRow.setPath(tableName);
-                    tableRow.setName(tableName);
-                    schema.add(tableRow);
-
-                    if (root.has("metaset") && root.get("metaset").isArray()) {
-                        for (com.fasterxml.jackson.databind.JsonNode colNode : root.get("metaset")) {
-                            MetaSetModelDto col = storageMapper.treeToValue(colNode, MetaSetModelDto.class);
-                            schema.add(col);
-                        }
-                    }
+                    Map<String, Object> tableData = storageMapper.convertValue(root, new TypeReference<Map<String, Object>>() {});
+                    result.add(tableData);
                 } catch (Exception ignored) {}
             }
 
-            if (!hasAnySync) return null;
-
-            MetaPackDto.MetaPackContent metaContent = new MetaPackDto.MetaPackContent();
-            metaContent.setVersion("1.0");
-            metaContent.setDataSource("postgres");
-            metaContent.setSchema(schema);
-            metaContent.setRelations(List.of());
-
-            MetaPackDto dto = new MetaPackDto();
-            dto.setMetaPack(metaContent);
-            return dto;
+            return result.isEmpty() ? null : result;
         });
     }
 

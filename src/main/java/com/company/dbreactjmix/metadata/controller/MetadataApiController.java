@@ -177,11 +177,11 @@ public class MetadataApiController {
     }
 
     @GetMapping("/sync/latest")
-    public MetaPackDto getLatestMetaSync(@RequestParam("packCode") String packCode) {
+    public List<Map<String, Object>> getLatestMetaSync(@RequestParam("packCode") String packCode) {
         try {
-            MetaPackDto dto = metaSetSnapshotService.getLatestMetaSyncSchema(packCode);
-            if (dto == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No MetaSync data");
-            return dto;
+            List<Map<String, Object>> data = metaSetSnapshotService.getLatestMetaSyncSchema(packCode);
+            if (data == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No MetaSync data");
+            return data;
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
