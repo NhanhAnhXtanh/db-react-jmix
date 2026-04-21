@@ -11,7 +11,6 @@ import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
 import com.company.dbreactjmix.metadata.dto.SyncCheckRequest;
 import com.company.dbreactjmix.metadata.dto.SyncConfirmRequest;
 import com.company.dbreactjmix.metadata.query.SqlBuilderService;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -19,7 +18,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,80 +51,45 @@ public class MetadataApiController {
 
     @PostMapping("/query/preview")
     public Map<String, Object> previewQuery(@RequestBody QueryBuildRequest request) {
-        try {
-            String sql = sqlBuilderService.buildSelectSql(request);
-            return Map.of("sql", sql);
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        }
+        return Map.of("sql", sqlBuilderService.buildSelectSql(request));
     }
 
     @PostMapping("/query/execute")
     public Map<String, Object> executeBuiltQuery(@RequestBody QueryBuildRequest request) {
-        try {
-            String sql = sqlBuilderService.buildSelectSql(request);
-            List<Map<String, Object>> data = metadataJdbcService.runSelectQuery(request.getConnection(), sql);
+        String sql = sqlBuilderService.buildSelectSql(request);
+        List<Map<String, Object>> data = metadataJdbcService.runSelectQuery(request.getConnection(), sql);
 
-            Map<String, Object> response = new LinkedHashMap<>();
-            response.put("sql", sql);
-            response.put("count", data.size());
-            response.put("data", data);
-            return response;
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("sql", sql);
+        response.put("count", data.size());
+        response.put("data", data);
+        return response;
     }
 
     @PostMapping("/query/raw/execute")
     public Map<String, Object> executeRawQuery(@RequestBody RawQueryRequest request) {
-        try {
-            List<Map<String, Object>> data = metadataJdbcService.runSelectQuery(request.getConnection(), request.getSql());
+        List<Map<String, Object>> data = metadataJdbcService.runSelectQuery(request.getConnection(), request.getSql());
 
-            Map<String, Object> response = new LinkedHashMap<>();
-            response.put("sql", request.getSql());
-            response.put("count", data.size());
-            response.put("data", data);
-            return response;
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("sql", request.getSql());
+        response.put("count", data.size());
+        response.put("data", data);
+        return response;
     }
 
     @PostMapping("/metapack")
     public MetaPackDto buildMetaPack(@RequestBody DbConnectionRequest request) {
-        try {
-            return metadataJdbcService.buildMetaPack(request);
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        return metadataJdbcService.buildMetaPack(request);
     }
 
     @PostMapping("/metapack/save")
     public Map<String, Object> saveMetaPack(@RequestBody SaveMetaPackRequest request) {
-        try {
-            return metaSetSnapshotService.saveSnapshot(request);
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        return metaSetSnapshotService.saveSnapshot(request);
     }
 
     @GetMapping("/metapack/versions")
     public List<Map<String, Object>> listMetaPackVersions(@RequestParam("metaSetCode") String metaSetCode) {
-        try {
-            return metaSetSnapshotService.listVersions(metaSetCode);
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        return metaSetSnapshotService.listVersions(metaSetCode);
     }
 
     @GetMapping("/metapack/version")
@@ -134,78 +97,38 @@ public class MetadataApiController {
             @RequestParam("metaSetCode") String metaSetCode,
             @RequestParam("versionNo") Integer versionNo
     ) {
-        try {
-            return metaSetSnapshotService.getVersion(metaSetCode, versionNo);
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        return metaSetSnapshotService.getVersion(metaSetCode, versionNo);
     }
 
     @GetMapping("/metapack/list")
     public List<Map<String, Object>> listMetaPacks() {
-        try {
-            return metaSetSnapshotService.listMetaPacks();
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        return metaSetSnapshotService.listMetaPacks();
     }
 
     @GetMapping("/metapack/{code}/latest-schema")
     public MetaPackDto getLatestPackSchema(@PathVariable("code") String code) {
-        try {
-            MetaPackDto dto = metaSetSnapshotService.getLatestPackSchema(code);
-            if (dto == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No saved schema");
-            return dto;
-        } catch (ResponseStatusException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        return metaSetSnapshotService.getLatestPackSchema(code);
     }
 
     @GetMapping("/metapack/{code}/versions")
     public List<Map<String, Object>> listMetaPackVersionsByCode(@PathVariable("code") String code) {
-        try {
-            return metaSetSnapshotService.listPackVersions(code);
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        return metaSetSnapshotService.listPackVersions(code);
     }
 
     @GetMapping("/sync/latest")
     public List<Map<String, Object>> getLatestMetaSync(@RequestParam("packCode") String packCode) {
-        try {
-            List<Map<String, Object>> data = metaSetSnapshotService.getLatestMetaSyncSchema(packCode);
-            return data != null ? data : List.of();
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        List<Map<String, Object>> data = metaSetSnapshotService.getLatestMetaSyncSchema(packCode);
+        return data != null ? data : List.of();
     }
 
     @PostMapping("/sync/check")
     public Map<String, Object> syncCheck(@RequestBody SyncCheckRequest request) {
-        try {
-            return metaSetSnapshotService.checkSync(request);
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        return metaSetSnapshotService.checkSync(request);
     }
 
     @PostMapping("/sync/confirm")
     public Map<String, Object> syncConfirm(@RequestBody SyncConfirmRequest request) {
-        try {
-            return metaSetSnapshotService.confirmSync(request);
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        return metaSetSnapshotService.confirmSync(request);
     }
 
     @GetMapping("/connections")
@@ -218,12 +141,6 @@ public class MetadataApiController {
 
     @PostMapping("/connection")
     public Map<String, Object> saveConnection(@RequestBody DbConnectionRequest request) {
-        try {
-            return connectionConfigService.toResponse(connectionConfigService.save(request));
-        } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
-        } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
-        }
+        return connectionConfigService.toResponse(connectionConfigService.save(request));
     }
 }
