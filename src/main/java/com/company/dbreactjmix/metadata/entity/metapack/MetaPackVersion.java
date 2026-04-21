@@ -1,4 +1,4 @@
-package com.company.dbreactjmix.metadata.entity.metaset;
+package com.company.dbreactjmix.metadata.entity.metapack;
 
 import io.jmix.core.annotation.DeletedBy;
 import io.jmix.core.annotation.DeletedDate;

@@ -1,5 +1,6 @@
 package com.company.dbreactjmix.metadata.entity.metaset;
 
+import com.company.dbreactjmix.metadata.entity.metapack.MetaPack;
 import io.jmix.core.annotation.DeletedBy;
 import io.jmix.core.annotation.DeletedDate;
 import io.jmix.core.entity.annotation.JmixGeneratedValue;
