@@ -711,19 +711,21 @@ public class MetaSetSnapshotService {
 
     // Mỗi lần sync = full snapshot: tạo 1 row MetaSync cho mỗi table hiện tại.
     // syncVersionNo là cấp pack (tất cả table trong cùng 1 sync có cùng version).
+    // Nếu không có bất kỳ thay đổi nào (hash trùng, không thêm/xoá table) → không lưu.
     private int upsertMetaSync(String packCode, String packName,
                                List<MetaSetModelDto> tables,
                                Map<String, List<MetaSetModelDto>> columnsByTable,
                                MetadataConnectionConfig connectionConfig) {
         return systemAuthenticator.withSystem(() -> {
-            // Tính nextSyncNo ở cấp pack = max(syncVersionNo của tất cả MetaSync thuộc pack) + 1
             MetaPack metaPack = dataManager.load(MetaPack.class)
                     .query("e.code = :code")
                     .parameter("code", packCode)
                     .optional()
                     .orElse(null);
 
-            int nextSyncNo = 1;
+            // Load tất cả hash hiện có theo tableCode + tính maxSyncNo
+            Map<String, String> existingHashes = new LinkedHashMap<>();
+            int maxSyncNo = 0;
             if (metaPack != null) {
                 List<MetaSet> existingMetaSets = dataManager.load(MetaSet.class)
                         .query("e.metaPack = :pack")
@@ -736,20 +738,52 @@ public class MetaSetSnapshotService {
                             .maxResults(1)
                             .optional()
                             .orElse(null);
-                    if (latestSync != null && latestSync.getSyncVersionNo() != null) {
-                        nextSyncNo = Math.max(nextSyncNo, latestSync.getSyncVersionNo() + 1);
+                    if (latestSync != null && latestSync.getFieldData() != null) {
+                        try {
+                            com.fasterxml.jackson.databind.JsonNode root = storageMapper.readTree(latestSync.getFieldData());
+                            String tableCode = root.has("table") ? root.get("table").asText() : null;
+                            if (tableCode != null) {
+                                existingHashes.put(tableCode, latestSync.getHashData());
+                            }
+                        } catch (Exception ignored) {}
+                        if (latestSync.getSyncVersionNo() != null) {
+                            maxSyncNo = Math.max(maxSyncNo, latestSync.getSyncVersionNo());
+                        }
                     }
                 }
             }
 
-            final int packSyncVersion = nextSyncNo;
+            // Tính hash hiện tại của từng table
+            Map<String, String> currentHashes = new LinkedHashMap<>();
+            for (MetaSetModelDto table : tables) {
+                String tableCode = table.getCode();
+                List<MetaSetModelDto> columns = columnsByTable.getOrDefault(tableCode, List.of());
+                currentHashes.put(tableCode, toColumnsHash(columns));
+            }
+
+            // So sánh: có thay đổi nếu khác hash, thêm table mới, hoặc xoá table
+            boolean anyChange = !currentHashes.keySet().equals(existingHashes.keySet());
+            if (!anyChange) {
+                for (Map.Entry<String, String> e : currentHashes.entrySet()) {
+                    if (!e.getValue().equals(existingHashes.get(e.getKey()))) {
+                        anyChange = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!anyChange) {
+                return 0; // Không có thay đổi → không lưu version mới
+            }
+
+            final int packSyncVersion = maxSyncNo + 1;
 
             // Lưu tất cả table hiện tại làm 1 full snapshot version
             for (MetaSetModelDto table : tables) {
                 String tableCode = table.getCode();
                 String metaSetCode = packCode + "-" + tableCode;
                 List<MetaSetModelDto> columns = columnsByTable.getOrDefault(tableCode, List.of());
-                String hash = toColumnsHash(columns);
+                String hash = currentHashes.get(tableCode);
 
                 MetaSet metaSet = findOrCreateMetaSet(metaSetCode,
                         packName + "." + (table.getName() != null ? table.getName() : tableCode));
