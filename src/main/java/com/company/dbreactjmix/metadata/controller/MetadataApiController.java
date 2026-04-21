@@ -176,6 +176,19 @@ public class MetadataApiController {
         }
     }
 
+    @GetMapping("/sync/latest")
+    public MetaPackDto getLatestMetaSync(@RequestParam("packCode") String packCode) {
+        try {
+            MetaPackDto dto = metaSetSnapshotService.getLatestMetaSyncSchema(packCode);
+            if (dto == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No MetaSync data");
+            return dto;
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage(), e);
+        }
+    }
+
     @PostMapping("/sync/check")
     public Map<String, Object> syncCheck(@RequestBody SyncCheckRequest request) {
         try {
