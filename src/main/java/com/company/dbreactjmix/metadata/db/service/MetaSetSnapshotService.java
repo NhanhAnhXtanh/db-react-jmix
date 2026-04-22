@@ -1,11 +1,15 @@
 package com.company.dbreactjmix.metadata.db.service;
 
+import com.company.dbreactjmix.metadata.dto.ColumnAttributesDto;
+import com.company.dbreactjmix.metadata.dto.ColumnDiffDto;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
 import com.company.dbreactjmix.metadata.dto.RelationItemDto;
 import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
+import com.company.dbreactjmix.metadata.dto.SchemaDiffDto;
 import com.company.dbreactjmix.metadata.dto.SyncCheckRequest;
 import com.company.dbreactjmix.metadata.dto.SyncConfirmRequest;
+import com.company.dbreactjmix.metadata.dto.TableDiffDto;
 import com.company.dbreactjmix.metadata.entity.MetadataConnectionConfig;
 import com.company.dbreactjmix.metadata.entity.metapack.MetaPack;
 import com.company.dbreactjmix.metadata.entity.metapack.MetaPackVersion;
@@ -545,7 +549,7 @@ public class MetaSetSnapshotService {
         });
     }
 
-    public Map<String, Object> checkSync(SyncCheckRequest request) {
+    public SchemaDiffDto previewSync(SyncCheckRequest request) {
         if (request.getMetaSetCode() == null || request.getMetaSetCode().isBlank())
             throw new IllegalArgumentException("metaSetCode is required");
 
@@ -611,6 +615,28 @@ public class MetaSetSnapshotService {
                     .map(MetaSetModelDto::getCode)
                     .collect(Collectors.toSet());
 
+            // FAST-CHECK: If all table hashes match + no add/remove → return no changes immediately
+            boolean allHashesMatch = true;
+            boolean allTablesPresent = currentTableCodes.size() == prevColsByTable.keySet().size();
+
+            if (allTablesPresent) {
+                for (MetaSetModelDto table : currentTables) {
+                    List<MetaSetModelDto> currentCols = currentColsByTable.getOrDefault(table.getCode(), List.of());
+                    List<MetaSetModelDto> prevCols = prevColsByTable.get(table.getCode());
+                    if (prevCols == null || !toColumnsHash(currentCols).equals(toColumnsHash(prevCols))) {
+                        allHashesMatch = false;
+                        break;
+                    }
+                }
+            } else {
+                allHashesMatch = false;
+            }
+
+            if (allHashesMatch) {
+                // No changes detected: return empty list (will be converted to empty SchemaDiffDto)
+                return new ArrayList<>();
+            }
+
             for (MetaSetModelDto table : currentTables) {
                 List<MetaSetModelDto> currentCols = currentColsByTable.getOrDefault(table.getCode(), List.of());
                 if (!prevColsByTable.containsKey(table.getCode())) {
@@ -646,10 +672,84 @@ public class MetaSetSnapshotService {
             return result;
         });
 
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("hasChanges", !diffs.isEmpty());
-        response.put("diffs", diffs);
-        return response;
+        return transformToNestedShape(diffs);
+    }
+
+    private SchemaDiffDto transformToNestedShape(List<Map<String, Object>> flatDiffs) {
+        SchemaDiffDto result = new SchemaDiffDto();
+        List<TableDiffDto> tables = new ArrayList<>();
+
+        for (Map<String, Object> flatDiff : flatDiffs) {
+            TableDiffDto tableDto = new TableDiffDto();
+            tableDto.setName((String) flatDiff.get("tableCode"));
+
+            List<ColumnDiffDto> columnDtos = new ArrayList<>();
+
+            if (Boolean.TRUE.equals(flatDiff.get("isNewTable"))) {
+                tableDto.setStatus("added");
+                @SuppressWarnings("unchecked")
+                List<String> addedCols = (List<String>) flatDiff.get("added");
+                for (String colCode : addedCols) {
+                    ColumnDiffDto colDto = new ColumnDiffDto();
+                    colDto.setName(colCode);
+                    colDto.setStatus("added");
+                    columnDtos.add(colDto);
+                }
+            } else if (Boolean.TRUE.equals(flatDiff.get("isDeletedTable"))) {
+                tableDto.setStatus("removed");
+                @SuppressWarnings("unchecked")
+                List<String> removedCols = (List<String>) flatDiff.get("removed");
+                for (String colCode : removedCols) {
+                    ColumnDiffDto colDto = new ColumnDiffDto();
+                    colDto.setName(colCode);
+                    colDto.setStatus("removed");
+                    columnDtos.add(colDto);
+                }
+            } else {
+                tableDto.setStatus("modified");
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> changedCols = (List<Map<String, Object>>) flatDiff.get("changed");
+                if (changedCols != null) {
+                    for (Map<String, Object> changedCol : changedCols) {
+                        ColumnDiffDto colDto = new ColumnDiffDto();
+                        colDto.setName((String) changedCol.get("code"));
+                        colDto.setStatus("modified");
+
+                        // Map previous/current if available
+                        if (changedCol.containsKey("previous")) {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> prevMap = (Map<String, Object>) changedCol.get("previous");
+                            if (prevMap != null) {
+                                ColumnAttributesDto prev = new ColumnAttributesDto();
+                                prev.setType((String) prevMap.get("type"));
+                                prev.setNullable((Boolean) prevMap.getOrDefault("nullable", false));
+                                colDto.setPrevious(prev);
+                            }
+                        }
+
+                        if (changedCol.containsKey("current")) {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> currMap = (Map<String, Object>) changedCol.get("current");
+                            if (currMap != null) {
+                                ColumnAttributesDto curr = new ColumnAttributesDto();
+                                curr.setType((String) currMap.get("type"));
+                                curr.setNullable((Boolean) currMap.getOrDefault("nullable", false));
+                                colDto.setCurrent(curr);
+                            }
+                        }
+
+                        columnDtos.add(colDto);
+                    }
+                }
+            }
+
+            tableDto.setColumns(columnDtos);
+            tables.add(tableDto);
+        }
+
+        result.setHasChanges(!tables.isEmpty());
+        result.setTables(tables);
+        return result;
     }
 
     private Map<String, List<MetaSetModelDto>> parsePackSyncColumns(String fieldData) {
@@ -674,7 +774,7 @@ public class MetaSetSnapshotService {
         }
     }
 
-    public Map<String, Object> confirmSync(SyncConfirmRequest request) {
+    public Map<String, Object> acceptSync(SyncConfirmRequest request) {
         if (request.getMetaSetCode() == null || request.getMetaSetCode().isBlank())
             throw new IllegalArgumentException("metaSetCode is required");
 
@@ -886,13 +986,31 @@ public class MetaSetSnapshotService {
 
         List<Map<String, Object>> changed = currentMap.entrySet().stream()
                 .filter(e -> prevMap.containsKey(e.getKey()))
-                .filter(e -> !Objects.equals(e.getValue().getDataType(),
-                        prevMap.get(e.getKey()).getDataType()))
+                .filter(e -> {
+                    boolean typeChanged = !Objects.equals(e.getValue().getDataType(),
+                            prevMap.get(e.getKey()).getDataType());
+                    boolean nullableChanged = e.getValue().isNull() != prevMap.get(e.getKey()).isNull();
+                    return typeChanged || nullableChanged;
+                })
                 .map(e -> {
+                    MetaSetModelDto curr = e.getValue();
+                    MetaSetModelDto prev_col = prevMap.get(e.getKey());
+
                     Map<String, Object> c = new LinkedHashMap<>();
                     c.put("code", e.getKey());
-                    c.put("from", prevMap.get(e.getKey()).getDataType());
-                    c.put("to", e.getValue().getDataType());
+
+                    // Add previous attributes
+                    Map<String, Object> prevAttrs = new LinkedHashMap<>();
+                    prevAttrs.put("type", prev_col.getDataType());
+                    prevAttrs.put("nullable", prev_col.isNull());
+                    c.put("previous", prevAttrs);
+
+                    // Add current attributes
+                    Map<String, Object> currAttrs = new LinkedHashMap<>();
+                    currAttrs.put("type", curr.getDataType());
+                    currAttrs.put("nullable", curr.isNull());
+                    c.put("current", currAttrs);
+
                     return c;
                 })
                 .collect(Collectors.toList());
