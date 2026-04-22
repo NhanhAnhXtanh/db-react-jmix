@@ -103,6 +103,22 @@ public class MetadataApiController {
         return metadataJdbcService.buildMetaPack(request);
     }
 
+    @PostMapping("/mongodb/schema/deep-scan")
+    public Map<String, Object> startMongoDeepScan(@RequestBody DbConnectionRequest request) {
+        if (request.getDatabaseType() != DatabaseType.MONGODB) {
+            throw new IllegalArgumentException("Deep scan is only available for MongoDB connections");
+        }
+        return mongoMetadataService.startDeepScan(request);
+    }
+
+    @PostMapping("/mongodb/schema/status")
+    public Map<String, Object> getMongoScanStatus(@RequestBody DbConnectionRequest request) {
+        if (request.getDatabaseType() != DatabaseType.MONGODB) {
+            throw new IllegalArgumentException("Mongo scan status is only available for MongoDB connections");
+        }
+        return mongoMetadataService.getScanStatus(request);
+    }
+
     @PostMapping("/metapack/save")
     public Map<String, Object> saveMetaPack(@RequestBody SaveMetaPackRequest request) {
         return metaSetSnapshotService.saveSnapshot(request);

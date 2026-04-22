@@ -3,12 +3,22 @@ package com.company.dbreactjmix.metadata.db.service;
 import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
+import com.company.dbreactjmix.metadata.entity.MongoSchemaSnapshot;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mongodb.ConnectionString;
+import com.mongodb.MongoCommandException;
+import com.mongodb.client.AggregateIterable;
+import com.mongodb.client.ChangeStreamIterable;
 import com.mongodb.client.FindIterable;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.changestream.ChangeStreamDocument;
+import com.mongodb.client.model.changestream.FullDocument;
+import io.jmix.core.DataManager;
 import org.bson.BsonArray;
 import org.bson.Document;
 import org.bson.types.ObjectId;
@@ -16,72 +26,108 @@ import org.springframework.stereotype.Service;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Date;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
 public class MongoMetadataService {
 
-    private static final int SCHEMA_SCAN_BATCH_SIZE = 1000;
-    private static final long SCHEMA_CACHE_TTL_MS = 5 * 60 * 1000L;
-    private static final ConcurrentMap<String, CachedMetaPack> SCHEMA_CACHE = new ConcurrentHashMap<>();
+    private static final int FAST_SAMPLE_SIZE = 5000;
+    private static final int DEEP_SCAN_BATCH_SIZE = 1000;
+    private static final int DEFAULT_QUERY_LIMIT = 100;
+    private static final int MAX_QUERY_LIMIT = 5000;
+    private static final long QUERY_TIMEOUT_MS = 30_000;
+    private static final Set<String> FORBIDDEN_AGGREGATE_STAGES = Set.of("$out", "$merge", "$function", "$accumulator");
 
     private static final Pattern FIND_PATTERN = Pattern.compile(
-            "^\\s*db\\.([A-Za-z0-9_\\-]+)\\.find\\s*\\((.*)\\)\\s*;?\\s*$",
+            "^\\s*db\\.([A-Za-z0-9_\\-]+)\\.find\\s*\\((.*?)\\)\\s*((?:\\.[A-Za-z]+\\s*\\([^)]*\\)\\s*)*)\\s*;?\\s*$",
             Pattern.DOTALL
     );
     private static final Pattern AGGREGATE_PATTERN = Pattern.compile(
             "^\\s*db\\.([A-Za-z0-9_\\-]+)\\.aggregate\\s*\\((.*)\\)\\s*;?\\s*$",
             Pattern.DOTALL
     );
+    private static final Pattern CHAIN_CALL_PATTERN = Pattern.compile("\\.([A-Za-z]+)\\s*\\(([^)]*)\\)");
+    private static final ConcurrentMap<String, CompletableFuture<Void>> CHANGE_STREAMS = new ConcurrentHashMap<>();
+
+    private final DataManager dataManager;
+    private final ObjectMapper objectMapper;
+
+    public MongoMetadataService(DataManager dataManager, ObjectMapper objectMapper) {
+        this.dataManager = dataManager;
+        this.objectMapper = objectMapper;
+    }
 
     public MetaPackDto buildMetaPack(DbConnectionRequest request) {
-        String cacheKey = buildSchemaCacheKey(request);
-        CachedMetaPack cached = SCHEMA_CACHE.get(cacheKey);
-        long now = System.currentTimeMillis();
-        if (cached != null && now - cached.createdAtMs() <= SCHEMA_CACHE_TTL_MS) {
-            return cached.metaPack();
-        }
-
-        try (MongoClient client = createClient(request)) {
-            MongoDatabase database = client.getDatabase(request.getDbName());
-            List<MetaSetModelDto> schemaRows = new ArrayList<>();
-
-            for (Document collectionInfo : database.listCollections()) {
-                String collectionName = collectionInfo.getString("name");
-                if (collectionName == null || collectionName.startsWith("system.")) {
-                    continue;
-                }
-
-                schemaRows.add(buildCollectionRoot(collectionName));
-                Document validator = readValidator(collectionInfo);
-                Map<String, MetaSetModelDto> collectionRows = new LinkedHashMap<>();
-                convertValidator(collectionName, validator).forEach(row -> collectionRows.put(row.getPath(), row));
-                scanCollectionFields(collectionName, database.getCollection(collectionName)).forEach(row -> collectionRows.putIfAbsent(row.getPath(), row));
-                schemaRows.addAll(collectionRows.values());
+        MongoSchemaSnapshot snapshot = findSnapshot(request).orElse(null);
+        if (snapshot != null && !isBlank(snapshot.getSchemaJson())) {
+            MetaPackDto metaPack = readMetaPack(snapshot.getSchemaJson());
+            if (!"SCANNING".equals(snapshot.getStatus())) {
+                runIncrementalScan(request, snapshot, metaPack);
             }
-
-            MetaPackDto.MetaPackContent content = new MetaPackDto.MetaPackContent();
-            content.setVersion("1.0");
-            content.setDataSource("mongodb");
-            content.setSchema(schemaRows);
-            content.setRelations(List.of());
-
-            MetaPackDto response = new MetaPackDto();
-            response.setMetaPack(content);
-            SCHEMA_CACHE.put(cacheKey, new CachedMetaPack(response, now));
-            return response;
+            if ("FULL".equals(snapshot.getStatus())) {
+                startChangeStreamIfSupported(request);
+            }
+            return metaPack;
         }
+
+        MongoSchemaScanResult sampled = scanSchema(request, false);
+        saveSnapshot(request, sampled.metaPack(), "PARTIAL", sampled.scannedDocs(), sampled.checkpoints());
+        return sampled.metaPack();
+    }
+
+    public Map<String, Object> startDeepScan(DbConnectionRequest request) {
+        MongoSchemaSnapshot snapshot = findOrCreateSnapshot(request);
+        if ("SCANNING".equals(snapshot.getStatus())) {
+            return snapshotStatus(snapshot);
+        }
+
+        snapshot.setStatus("SCANNING");
+        snapshot.setStartedAt(OffsetDateTime.now());
+        snapshot.setCompletedAt(null);
+        snapshot.setErrorMessage(null);
+        dataManager.save(snapshot);
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                MongoSchemaScanResult full = scanSchema(request, true);
+                saveSnapshot(request, full.metaPack(), "FULL", full.scannedDocs(), full.checkpoints());
+                startChangeStreamIfSupported(request);
+            } catch (Exception e) {
+                MongoSchemaSnapshot failed = findOrCreateSnapshot(request);
+                failed.setStatus("FAILED");
+                failed.setCompletedAt(OffsetDateTime.now());
+                failed.setErrorMessage(e.getMessage());
+                dataManager.save(failed);
+            }
+        });
+
+        return snapshotStatus(snapshot);
+    }
+
+    public Map<String, Object> getScanStatus(DbConnectionRequest request) {
+        return findSnapshot(request)
+                .map(this::snapshotStatus)
+                .orElseGet(() -> Map.of("status", "NONE"));
     }
 
     public List<Map<String, Object>> runReadQuery(DbConnectionRequest request, String query) {
@@ -94,104 +140,220 @@ public class MongoMetadataService {
             MongoDatabase database = client.getDatabase(request.getDbName());
             Matcher findMatcher = FIND_PATTERN.matcher(query);
             if (findMatcher.matches()) {
-                String collectionName = findMatcher.group(1);
-                Document filter = parseFindFilter(findMatcher.group(2));
-                FindIterable<Document> docs = database.getCollection(collectionName)
-                        .find(filter)
-                        .limit(1000);
-                return toRows(docs);
+                MongoFindCommand command = parseFindCommand(findMatcher);
+                FindIterable<Document> docs = database.getCollection(command.collection())
+                        .find(command.filter())
+                        .skip(command.skip())
+                        .limit(command.limit())
+                        .maxTime(QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                if (command.projection() != null) {
+                    docs = docs.projection(command.projection());
+                }
+                if (command.sort() != null) {
+                    docs = docs.sort(command.sort());
+                }
+                return toRows(docs, command.limit());
             }
 
             Matcher aggregateMatcher = AGGREGATE_PATTERN.matcher(query);
             if (aggregateMatcher.matches()) {
                 String collectionName = aggregateMatcher.group(1);
                 List<Document> pipeline = parsePipeline(aggregateMatcher.group(2));
-                return toRows(database.getCollection(collectionName).aggregate(pipeline), 1000);
+                validateAggregatePipeline(pipeline);
+                normalizeAggregateLimit(pipeline);
+                AggregateIterable<Document> docs = database.getCollection(collectionName)
+                        .aggregate(pipeline)
+                        .maxTime(QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                return toRows(docs, MAX_QUERY_LIMIT);
             }
         }
 
-        throw new IllegalArgumentException("Only db.<collection>.find({...}) and db.<collection>.aggregate([...]) are supported");
+        throw new IllegalArgumentException("Only read-only find()/aggregate() Mongo queries are supported");
     }
 
-    private MongoClient createClient(DbConnectionRequest request) {
-        return MongoClients.create(new ConnectionString(buildConnectionString(request)));
-    }
+    private MongoSchemaScanResult scanSchema(DbConnectionRequest request, boolean fullScan) {
+        try (MongoClient client = createClient(request)) {
+            MongoDatabase database = client.getDatabase(request.getDbName());
+            Map<String, String> checkpoints = new LinkedHashMap<>();
+            List<MetaSetModelDto> schemaRows = new ArrayList<>();
+            long scannedDocs = 0L;
 
-    private String buildConnectionString(DbConnectionRequest request) {
-        String userInfo = "";
-        if (!isBlank(request.getUsername())) {
-            userInfo = encode(request.getUsername()) + ":" + encode(request.getPassword() == null ? "" : request.getPassword()) + "@";
-        }
+            for (Document collectionInfo : database.listCollections()) {
+                String collectionName = collectionInfo.getString("name");
+                if (collectionName == null || collectionName.startsWith("system.")) {
+                    continue;
+                }
 
-        String authSource = "";
-        if (!isBlank(request.getSchema())) {
-            authSource = "?authSource=" + encode(request.getSchema());
-        }
-
-        return "mongodb://" + userInfo + request.getHost() + ":" + request.getPort() + "/" + request.getDbName() + authSource;
-    }
-
-    private Document readValidator(Document collectionInfo) {
-        Document options = collectionInfo.get("options", Document.class);
-        if (options == null) {
-            return null;
-        }
-        return options.get("validator", Document.class);
-    }
-
-    private MetaSetModelDto buildCollectionRoot(String collectionName) {
-        MetaSetModelDto root = new MetaSetModelDto();
-        root.setId(collectionName);
-        root.setCode(collectionName);
-        root.setName(collectionName);
-        root.setDataType("collection");
-        root.setPath(collectionName);
-        root.setPath_parent(null);
-        root.setNull(false);
-        root.setPrimaryKey(false);
-        return root;
-    }
-
-    private List<MetaSetModelDto> convertValidator(String collectionName, Document validator) {
-        if (validator == null) {
-            return List.of();
-        }
-
-        Document jsonSchema = validator.get("$jsonSchema", Document.class);
-        if (jsonSchema == null) {
-            return List.of();
-        }
-
-        Document properties = jsonSchema.get("properties", Document.class);
-        Set<String> required = new HashSet<>(readRequired(jsonSchema));
-        List<MetaSetModelDto> rows = new ArrayList<>();
-        walkProperties(collectionName, collectionName, properties, required, rows);
-        return rows;
-    }
-
-    private List<MetaSetModelDto> scanCollectionFields(String collectionName, MongoCollection<Document> collection) {
-        Map<String, MetaSetModelDto> rows = new LinkedHashMap<>();
-        Set<String> seenShapes = new HashSet<>();
-        for (Document document : collection.find().batchSize(SCHEMA_SCAN_BATCH_SIZE)) {
-            Map<String, MetaSetModelDto> documentRows = new LinkedHashMap<>();
-            for (Map.Entry<String, Object> entry : document.entrySet()) {
-                scanValue(collectionName, collectionName, entry.getKey(), entry.getValue(), documentRows);
+                schemaRows.add(buildCollectionRoot(collectionName));
+                Document validator = readValidator(collectionInfo);
+                Map<String, MetaSetModelDto> collectionRows = new LinkedHashMap<>();
+                convertValidator(collectionName, validator).forEach(row -> collectionRows.put(row.getPath(), row));
+                CollectionScanResult scanResult = scanCollectionFields(collectionName, database.getCollection(collectionName), fullScan);
+                scanResult.rows().forEach(row -> collectionRows.putIfAbsent(row.getPath(), row));
+                scannedDocs += scanResult.scannedDocs();
+                if (scanResult.lastObjectIdHex() != null) {
+                    checkpoints.put(collectionName, scanResult.lastObjectIdHex());
+                }
+                schemaRows.addAll(collectionRows.values());
             }
-            String shapeFingerprint = String.join("|", documentRows.keySet());
-            if (seenShapes.add(shapeFingerprint)) {
-                documentRows.forEach(rows::putIfAbsent);
-            }
+
+            MetaPackDto.MetaPackContent content = new MetaPackDto.MetaPackContent();
+            content.setVersion("1.0");
+            content.setDataSource("mongodb");
+            content.setSchema(schemaRows);
+            content.setRelations(List.of());
+
+            MetaPackDto response = new MetaPackDto();
+            response.setMetaPack(content);
+            return new MongoSchemaScanResult(response, checkpoints, scannedDocs);
         }
-        return new ArrayList<>(rows.values());
     }
 
-    private void scanValue(
-            String parentPath,
-            String pathPrefix,
-            String field,
-            Object value,
-            Map<String, MetaSetModelDto> rows
+    private void runIncrementalScan(DbConnectionRequest request, MongoSchemaSnapshot snapshot, MetaPackDto metaPack) {
+        Map<String, String> checkpoints = readCheckpoints(snapshot.getCheckpointJson());
+        if (checkpoints.isEmpty()) {
+            return;
+        }
+
+        Map<String, MetaSetModelDto> mergedRows = schemaMap(metaPack.getMetaPack().getSchema());
+        Map<String, String> updatedCheckpoints = new LinkedHashMap<>(checkpoints);
+        boolean changed = false;
+
+        try (MongoClient client = createClient(request)) {
+            MongoDatabase database = client.getDatabase(request.getDbName());
+            for (Map.Entry<String, String> entry : checkpoints.entrySet()) {
+                if (!ObjectId.isValid(entry.getValue())) {
+                    continue;
+                }
+                Map<String, MetaSetModelDto> rows = new LinkedHashMap<>();
+                ObjectId lastId = new ObjectId(entry.getValue());
+                ObjectId maxId = lastId;
+                MongoCollection<Document> collection = database.getCollection(entry.getKey());
+                for (Document document : collection.find(new Document("_id", new Document("$gt", lastId))).batchSize(DEEP_SCAN_BATCH_SIZE)) {
+                    Object id = document.get("_id");
+                    if (id instanceof ObjectId objectId && objectId.compareTo(maxId) > 0) {
+                        maxId = objectId;
+                    }
+                    scanDocument(entry.getKey(), document, rows);
+                }
+                for (MetaSetModelDto row : rows.values()) {
+                    if (!mergedRows.containsKey(row.getPath())) {
+                        mergedRows.put(row.getPath(), row);
+                        changed = true;
+                    }
+                }
+                if (maxId.compareTo(lastId) > 0) {
+                    updatedCheckpoints.put(entry.getKey(), maxId.toHexString());
+                }
+            }
+        } catch (Exception ignored) {
+            return;
+        }
+
+        if (changed) {
+            metaPack.getMetaPack().setSchema(new ArrayList<>(mergedRows.values()));
+            saveSnapshot(request, metaPack, snapshot.getStatus(), snapshot.getScannedDocs(), updatedCheckpoints);
+        } else if (!updatedCheckpoints.equals(checkpoints)) {
+            snapshot.setCheckpointJson(writeJson(updatedCheckpoints));
+            dataManager.save(snapshot);
+        }
+    }
+
+    private void startChangeStreamIfSupported(DbConnectionRequest request) {
+        String key = buildSchemaCacheKey(request);
+        if (CHANGE_STREAMS.containsKey(key)) {
+            return;
+        }
+
+        CompletableFuture<Void> watcher = CompletableFuture.runAsync(() -> {
+            try (MongoClient client = createClient(request)) {
+                MongoDatabase database = client.getDatabase(request.getDbName());
+                ChangeStreamIterable<Document> stream = database.watch().fullDocument(FullDocument.UPDATE_LOOKUP);
+                for (ChangeStreamDocument<Document> change : stream) {
+                    if (change.getNamespace() == null || change.getFullDocument() == null) {
+                        continue;
+                    }
+                    updateSnapshotWithDocument(request, change.getNamespace().getCollectionName(), change.getFullDocument());
+                }
+            } catch (Exception ignored) {
+                CHANGE_STREAMS.remove(key);
+            }
+        });
+        CHANGE_STREAMS.put(key, watcher);
+    }
+
+    private void updateSnapshotWithDocument(DbConnectionRequest request, String collectionName, Document document) {
+        MongoSchemaSnapshot snapshot = findSnapshot(request).orElse(null);
+        if (snapshot == null || isBlank(snapshot.getSchemaJson())) {
+            return;
+        }
+
+        MetaPackDto metaPack = readMetaPack(snapshot.getSchemaJson());
+        Map<String, MetaSetModelDto> mergedRows = schemaMap(metaPack.getMetaPack().getSchema());
+        Map<String, MetaSetModelDto> documentRows = new LinkedHashMap<>();
+        scanDocument(collectionName, document, documentRows);
+
+        boolean changed = false;
+        for (MetaSetModelDto row : documentRows.values()) {
+            if (!mergedRows.containsKey(row.getPath())) {
+                mergedRows.put(row.getPath(), row);
+                changed = true;
+            }
+        }
+
+        Map<String, String> checkpoints = readCheckpoints(snapshot.getCheckpointJson());
+        Object id = document.get("_id");
+        if (id instanceof ObjectId objectId) {
+            checkpoints.put(collectionName, objectId.toHexString());
+        }
+
+        if (changed) {
+            metaPack.getMetaPack().setSchema(new ArrayList<>(mergedRows.values()));
+            snapshot.setSchemaJson(writeJson(metaPack));
+            snapshot.setSchemaHash(hashSchema(metaPack.getMetaPack().getSchema()));
+        }
+        snapshot.setCheckpointJson(writeJson(checkpoints));
+        dataManager.save(snapshot);
+    }
+
+    private CollectionScanResult scanCollectionFields(
+            String collectionName,
+            MongoCollection<Document> collection,
+            boolean fullScan
     ) {
+        Map<String, MetaSetModelDto> rows = new LinkedHashMap<>();
+        ObjectId maxObjectId = null;
+        long scannedDocs = 0L;
+        Iterable<Document> documents = fullScan
+                ? collection.find().batchSize(DEEP_SCAN_BATCH_SIZE)
+                : sampleDocuments(collection);
+
+        for (Document document : documents) {
+            scannedDocs++;
+            Object id = document.get("_id");
+            if (id instanceof ObjectId objectId && (maxObjectId == null || objectId.compareTo(maxObjectId) > 0)) {
+                maxObjectId = objectId;
+            }
+            scanDocument(collectionName, document, rows);
+        }
+        return new CollectionScanResult(new ArrayList<>(rows.values()), maxObjectId == null ? null : maxObjectId.toHexString(), scannedDocs);
+    }
+
+    private Iterable<Document> sampleDocuments(MongoCollection<Document> collection) {
+        try {
+            return collection.aggregate(List.of(new Document("$sample", new Document("size", FAST_SAMPLE_SIZE))));
+        } catch (MongoCommandException e) {
+            return collection.find().limit(FAST_SAMPLE_SIZE);
+        }
+    }
+
+    private void scanDocument(String collectionName, Document document, Map<String, MetaSetModelDto> rows) {
+        for (Map.Entry<String, Object> entry : document.entrySet()) {
+            scanValue(collectionName, collectionName, entry.getKey(), entry.getValue(), rows);
+        }
+    }
+
+    private void scanValue(String parentPath, String pathPrefix, String field, Object value, Map<String, MetaSetModelDto> rows) {
         String path = pathPrefix + "." + field;
         String type = inferType(value);
         rows.putIfAbsent(path, buildFieldRow(field, path, parentPath, type, true));
@@ -214,17 +376,202 @@ public class MongoMetadataService {
         }
     }
 
-    private void walkProperties(
-            String parentPath,
-            String pathPrefix,
-            Document properties,
-            Set<String> required,
-            List<MetaSetModelDto> rows
-    ) {
+    private MongoFindCommand parseFindCommand(Matcher matcher) {
+        String collectionName = matcher.group(1);
+        List<String> args = splitTopLevelArguments(matcher.group(2));
+        Document filter = args.isEmpty() || args.get(0).isBlank() ? new Document() : Document.parse(args.get(0));
+        Document projection = args.size() < 2 || args.get(1).isBlank() ? null : Document.parse(args.get(1));
+
+        Document sort = null;
+        int skip = 0;
+        Integer requestedLimit = null;
+        Matcher chainMatcher = CHAIN_CALL_PATTERN.matcher(matcher.group(3));
+        while (chainMatcher.find()) {
+            String method = chainMatcher.group(1).toLowerCase();
+            String value = chainMatcher.group(2).trim();
+            switch (method) {
+                case "sort" -> sort = Document.parse(value);
+                case "skip" -> skip = Math.max(0, Integer.parseInt(value));
+                case "limit" -> requestedLimit = Integer.parseInt(value);
+                default -> throw new IllegalArgumentException("Unsupported Mongo find chain method: " + method);
+            }
+        }
+
+        int limit = requestedLimit == null ? DEFAULT_QUERY_LIMIT : Math.max(0, Math.min(requestedLimit, MAX_QUERY_LIMIT));
+        return new MongoFindCommand(collectionName, filter, projection, sort, skip, limit);
+    }
+
+    private List<String> splitTopLevelArguments(String value) {
+        List<String> result = new ArrayList<>();
+        String text = value == null ? "" : value.trim();
+        if (text.isEmpty()) {
+            return result;
+        }
+
+        int depth = 0;
+        int start = 0;
+        boolean inString = false;
+        char quote = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inString) {
+                if (c == quote && (i == 0 || text.charAt(i - 1) != '\\')) {
+                    inString = false;
+                }
+            } else if (c == '"' || c == '\'') {
+                inString = true;
+                quote = c;
+            } else if (c == '{' || c == '[' || c == '(') {
+                depth++;
+            } else if (c == '}' || c == ']' || c == ')') {
+                depth--;
+            } else if (c == ',' && depth == 0) {
+                result.add(text.substring(start, i).trim());
+                start = i + 1;
+            }
+        }
+        result.add(text.substring(start).trim());
+        return result;
+    }
+
+    private List<Document> parsePipeline(String args) {
+        BsonArray array = BsonArray.parse(args.trim());
+        List<Document> pipeline = new ArrayList<>();
+        array.forEach(value -> pipeline.add(Document.parse(value.asDocument().toJson())));
+        return pipeline;
+    }
+
+    private void validateAggregatePipeline(List<Document> pipeline) {
+        for (Document stage : pipeline) {
+            for (String key : stage.keySet()) {
+                if (FORBIDDEN_AGGREGATE_STAGES.contains(key)) {
+                    throw new IllegalArgumentException("Forbidden aggregate stage: " + key);
+                }
+            }
+        }
+    }
+
+    private void normalizeAggregateLimit(List<Document> pipeline) {
+        for (Document stage : pipeline) {
+            Object limit = stage.get("$limit");
+            if (limit instanceof Number number && number.intValue() > MAX_QUERY_LIMIT) {
+                stage.put("$limit", MAX_QUERY_LIMIT);
+                return;
+            }
+            if (limit instanceof Number) {
+                return;
+            }
+        }
+        pipeline.add(new Document("$limit", DEFAULT_QUERY_LIMIT));
+    }
+
+    private void validateReadOnly(String query) {
+        String normalized = query.strip().replaceAll("\\s+", " ").toLowerCase();
+        String[] forbidden = {"insert", "save", "update", "delete", "remove", "drop", "createcollection", "createindex", "dropdatabase", "runcommand", "bulkwrite"};
+        for (String keyword : forbidden) {
+            if (normalized.contains("." + keyword + "(") || normalized.startsWith(keyword + "(")) {
+                throw new IllegalArgumentException("Forbidden Mongo command: " + keyword);
+            }
+        }
+    }
+
+    private void saveSnapshot(DbConnectionRequest request, MetaPackDto metaPack, String status, Long scannedDocs, Map<String, String> checkpointsOverride) {
+        MongoSchemaSnapshot snapshot = findOrCreateSnapshot(request);
+        Map<String, String> checkpoints = checkpointsOverride != null ? checkpointsOverride : new LinkedHashMap<>();
+        snapshot.setStatus(status);
+        snapshot.setSchemaJson(writeJson(metaPack));
+        snapshot.setSchemaHash(hashSchema(metaPack.getMetaPack().getSchema()));
+        snapshot.setCheckpointJson(writeJson(checkpoints));
+        snapshot.setScannedDocs(scannedDocs);
+        snapshot.setCompletedAt(OffsetDateTime.now());
+        snapshot.setErrorMessage(null);
+        dataManager.save(snapshot);
+    }
+
+    private Optional<MongoSchemaSnapshot> findSnapshot(DbConnectionRequest request) {
+        return dataManager.load(MongoSchemaSnapshot.class)
+                .query("e.connectionKey = :key")
+                .parameter("key", buildSchemaCacheKey(request))
+                .optional();
+    }
+
+    private MongoSchemaSnapshot findOrCreateSnapshot(DbConnectionRequest request) {
+        return findSnapshot(request).orElseGet(() -> {
+            MongoSchemaSnapshot snapshot = dataManager.create(MongoSchemaSnapshot.class);
+            snapshot.setConnectionKey(buildSchemaCacheKey(request));
+            snapshot.setStatus("NONE");
+            snapshot.setScannedDocs(0L);
+            return snapshot;
+        });
+    }
+
+    private Map<String, Object> snapshotStatus(MongoSchemaSnapshot snapshot) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", snapshot.getStatus());
+        result.put("schemaHash", snapshot.getSchemaHash());
+        result.put("scannedDocs", snapshot.getScannedDocs());
+        result.put("startedAt", snapshot.getStartedAt());
+        result.put("completedAt", snapshot.getCompletedAt());
+        result.put("errorMessage", snapshot.getErrorMessage());
+        return result;
+    }
+
+    private MongoClient createClient(DbConnectionRequest request) {
+        return MongoClients.create(new ConnectionString(buildConnectionString(request)));
+    }
+
+    private String buildConnectionString(DbConnectionRequest request) {
+        String userInfo = "";
+        if (!isBlank(request.getUsername())) {
+            userInfo = encode(request.getUsername()) + ":" + encode(request.getPassword() == null ? "" : request.getPassword()) + "@";
+        }
+
+        String authSource = "";
+        if (!isBlank(request.getSchema())) {
+            authSource = "?authSource=" + encode(request.getSchema());
+        }
+
+        return "mongodb://" + userInfo + request.getHost() + ":" + request.getPort() + "/" + request.getDbName() + authSource;
+    }
+
+    private Document readValidator(Document collectionInfo) {
+        Document options = collectionInfo.get("options", Document.class);
+        return options == null ? null : options.get("validator", Document.class);
+    }
+
+    private MetaSetModelDto buildCollectionRoot(String collectionName) {
+        MetaSetModelDto root = new MetaSetModelDto();
+        root.setId(collectionName);
+        root.setCode(collectionName);
+        root.setName(collectionName);
+        root.setDataType("collection");
+        root.setPath(collectionName);
+        root.setPath_parent(null);
+        root.setNull(false);
+        root.setPrimaryKey(false);
+        return root;
+    }
+
+    private List<MetaSetModelDto> convertValidator(String collectionName, Document validator) {
+        if (validator == null) {
+            return List.of();
+        }
+        Document jsonSchema = validator.get("$jsonSchema", Document.class);
+        if (jsonSchema == null) {
+            return List.of();
+        }
+
+        Document properties = jsonSchema.get("properties", Document.class);
+        Set<String> required = new HashSet<>(readRequired(jsonSchema));
+        List<MetaSetModelDto> rows = new ArrayList<>();
+        walkProperties(collectionName, collectionName, properties, required, rows);
+        return rows;
+    }
+
+    private void walkProperties(String parentPath, String pathPrefix, Document properties, Set<String> required, List<MetaSetModelDto> rows) {
         if (properties == null) {
             return;
         }
-
         for (Map.Entry<String, Object> entry : properties.entrySet()) {
             if (!(entry.getValue() instanceof Document definition)) {
                 continue;
@@ -236,17 +583,14 @@ public class MongoMetadataService {
             if (type == null) {
                 type = "object";
             }
-
             rows.add(buildFieldRow(field, path, parentPath, type, !required.contains(field)));
 
             if ("object".equals(type)) {
-                Set<String> childRequired = new HashSet<>(readRequired(definition));
-                walkProperties(path, path, definition.get("properties", Document.class), childRequired, rows);
+                walkProperties(path, path, definition.get("properties", Document.class), new HashSet<>(readRequired(definition)), rows);
             } else if ("array".equals(type)) {
                 Document items = definition.get("items", Document.class);
                 if (items != null && "object".equals(items.getString("bsonType"))) {
-                    Set<String> itemRequired = new HashSet<>(readRequired(items));
-                    walkProperties(path, path, items.get("properties", Document.class), itemRequired, rows);
+                    walkProperties(path, path, items.get("properties", Document.class), new HashSet<>(readRequired(items)), rows);
                 }
             }
         }
@@ -271,84 +615,15 @@ public class MongoMetadataService {
     }
 
     private String inferType(Object value) {
-        if (value instanceof ObjectId) {
-            return "objectId";
-        }
-        if (value instanceof Document) {
-            return "object";
-        }
-        if (value instanceof Collection<?>) {
-            return "array";
-        }
-        if (value instanceof Integer || value instanceof Long || value instanceof Short) {
-            return "integer";
-        }
-        if (value instanceof Number) {
-            return "number";
-        }
-        if (value instanceof Boolean) {
-            return "boolean";
-        }
-        if (value instanceof Date) {
-            return "date";
-        }
+        if (value instanceof ObjectId) return "objectId";
+        if (value instanceof Document) return "object";
+        if (value instanceof Collection<?>) return "array";
+        if (value instanceof Integer || value instanceof Long || value instanceof Short) return "integer";
+        if (value instanceof Number) return "number";
+        if (value instanceof Boolean) return "boolean";
+        if (value instanceof Date) return "date";
+        if (value == null) return "null";
         return "string";
-    }
-
-    private void validateReadOnly(String query) {
-        String normalized = query.strip().replaceAll("\\s+", " ").toLowerCase();
-        String[] forbidden = {"insert", "save", "update", "delete", "remove", "drop", "createcollection", "createindex", "dropdatabase"};
-        for (String keyword : forbidden) {
-            if (normalized.contains("." + keyword + "(") || normalized.startsWith(keyword + "(")) {
-                throw new IllegalArgumentException("Forbidden Mongo command: " + keyword);
-            }
-        }
-    }
-
-    private Document parseFindFilter(String args) {
-        String trimmed = args == null ? "" : args.trim();
-        if (trimmed.isEmpty()) {
-            return new Document();
-        }
-
-        int comma = findTopLevelComma(trimmed);
-        String filter = comma >= 0 ? trimmed.substring(0, comma).trim() : trimmed;
-        return filter.isEmpty() ? new Document() : Document.parse(filter);
-    }
-
-    private List<Document> parsePipeline(String args) {
-        BsonArray array = BsonArray.parse(args.trim());
-        List<Document> pipeline = new ArrayList<>();
-        array.forEach(value -> pipeline.add(Document.parse(value.asDocument().toJson())));
-        return pipeline;
-    }
-
-    private int findTopLevelComma(String value) {
-        int depth = 0;
-        boolean inString = false;
-        char quote = 0;
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            if (inString) {
-                if (c == quote && value.charAt(i - 1) != '\\') {
-                    inString = false;
-                }
-            } else if (c == '"' || c == '\'') {
-                inString = true;
-                quote = c;
-            } else if (c == '{' || c == '[' || c == '(') {
-                depth++;
-            } else if (c == '}' || c == ']' || c == ')') {
-                depth--;
-            } else if (c == ',' && depth == 0) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private List<Map<String, Object>> toRows(Iterable<Document> docs) {
-        return toRows(docs, 1000);
     }
 
     private List<Map<String, Object>> toRows(Iterable<Document> docs, int limit) {
@@ -371,20 +646,63 @@ public class MongoMetadataService {
     }
 
     private Object convertValue(Object value) {
-        if (value instanceof ObjectId objectId) {
-            return objectId.toHexString();
-        }
-        if (value instanceof Document document) {
-            return convertDocument(document);
-        }
-        if (value instanceof Collection<?> collection) {
-            return collection.stream().map(this::convertValue).toList();
-        }
+        if (value instanceof ObjectId objectId) return objectId.toHexString();
+        if (value instanceof Document document) return convertDocument(document);
+        if (value instanceof Collection<?> collection) return collection.stream().map(this::convertValue).toList();
         return value;
     }
 
-    private String encode(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    private Map<String, MetaSetModelDto> schemaMap(List<MetaSetModelDto> schema) {
+        Map<String, MetaSetModelDto> rows = new LinkedHashMap<>();
+        for (MetaSetModelDto row : schema) {
+            rows.put(row.getPath(), row);
+        }
+        return rows;
+    }
+
+    private String hashSchema(List<MetaSetModelDto> rows) {
+        String canonical = rows.stream()
+                .sorted(Comparator.comparing(MetaSetModelDto::getPath))
+                .map(row -> row.getPath() + ":" + row.getDataType() + ":" + row.isNull() + ":" + row.isPrimaryKey())
+                .reduce("", (left, right) -> left + "\n" + right);
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(canonical.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : bytes) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException e) {
+            return Base64.getEncoder().encodeToString(canonical.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private String writeJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Cannot serialize Mongo schema snapshot", e);
+        }
+    }
+
+    private MetaPackDto readMetaPack(String json) {
+        try {
+            return objectMapper.readValue(json, MetaPackDto.class);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Cannot read Mongo schema snapshot", e);
+        }
+    }
+
+    private Map<String, String> readCheckpoints(String json) {
+        if (isBlank(json)) {
+            return new HashMap<>();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<>() {});
+        } catch (JsonProcessingException e) {
+            return new HashMap<>();
+        }
     }
 
     private String buildSchemaCacheKey(DbConnectionRequest request) {
@@ -397,6 +715,10 @@ public class MongoMetadataService {
         );
     }
 
+    private String encode(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
     private String nullToEmpty(String value) {
         return value == null ? "" : value;
     }
@@ -405,6 +727,19 @@ public class MongoMetadataService {
         return value == null || value.isBlank();
     }
 
-    private record CachedMetaPack(MetaPackDto metaPack, long createdAtMs) {
+    private record MongoFindCommand(
+            String collection,
+            Document filter,
+            Document projection,
+            Document sort,
+            int skip,
+            int limit
+    ) {
+    }
+
+    private record CollectionScanResult(List<MetaSetModelDto> rows, String lastObjectIdHex, long scannedDocs) {
+    }
+
+    private record MongoSchemaScanResult(MetaPackDto metaPack, Map<String, String> checkpoints, long scannedDocs) {
     }
 }
