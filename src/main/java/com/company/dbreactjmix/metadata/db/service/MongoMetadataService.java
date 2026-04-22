@@ -24,13 +24,17 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
 public class MongoMetadataService {
 
-    private static final int SCHEMA_SAMPLE_LIMIT = 200;
+    private static final int SCHEMA_SCAN_BATCH_SIZE = 1000;
+    private static final long SCHEMA_CACHE_TTL_MS = 5 * 60 * 1000L;
+    private static final ConcurrentMap<String, CachedMetaPack> SCHEMA_CACHE = new ConcurrentHashMap<>();
 
     private static final Pattern FIND_PATTERN = Pattern.compile(
             "^\\s*db\\.([A-Za-z0-9_\\-]+)\\.find\\s*\\((.*)\\)\\s*;?\\s*$",
@@ -42,6 +46,13 @@ public class MongoMetadataService {
     );
 
     public MetaPackDto buildMetaPack(DbConnectionRequest request) {
+        String cacheKey = buildSchemaCacheKey(request);
+        CachedMetaPack cached = SCHEMA_CACHE.get(cacheKey);
+        long now = System.currentTimeMillis();
+        if (cached != null && now - cached.createdAtMs() <= SCHEMA_CACHE_TTL_MS) {
+            return cached.metaPack();
+        }
+
         try (MongoClient client = createClient(request)) {
             MongoDatabase database = client.getDatabase(request.getDbName());
             List<MetaSetModelDto> schemaRows = new ArrayList<>();
@@ -68,6 +79,7 @@ public class MongoMetadataService {
 
             MetaPackDto response = new MetaPackDto();
             response.setMetaPack(content);
+            SCHEMA_CACHE.put(cacheKey, new CachedMetaPack(response, now));
             return response;
         }
     }
@@ -159,9 +171,15 @@ public class MongoMetadataService {
 
     private List<MetaSetModelDto> scanCollectionFields(String collectionName, MongoCollection<Document> collection) {
         Map<String, MetaSetModelDto> rows = new LinkedHashMap<>();
-        for (Document document : collection.find().limit(SCHEMA_SAMPLE_LIMIT)) {
+        Set<String> seenShapes = new HashSet<>();
+        for (Document document : collection.find().batchSize(SCHEMA_SCAN_BATCH_SIZE)) {
+            Map<String, MetaSetModelDto> documentRows = new LinkedHashMap<>();
             for (Map.Entry<String, Object> entry : document.entrySet()) {
-                scanValue(collectionName, collectionName, entry.getKey(), entry.getValue(), rows);
+                scanValue(collectionName, collectionName, entry.getKey(), entry.getValue(), documentRows);
+            }
+            String shapeFingerprint = String.join("|", documentRows.keySet());
+            if (seenShapes.add(shapeFingerprint)) {
+                documentRows.forEach(rows::putIfAbsent);
             }
         }
         return new ArrayList<>(rows.values());
@@ -369,7 +387,24 @@ public class MongoMetadataService {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
+    private String buildSchemaCacheKey(DbConnectionRequest request) {
+        return String.join("|",
+                nullToEmpty(request.getHost()),
+                nullToEmpty(request.getPort()),
+                nullToEmpty(request.getDbName()),
+                nullToEmpty(request.getSchema()),
+                nullToEmpty(request.getUsername())
+        );
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private record CachedMetaPack(MetaPackDto metaPack, long createdAtMs) {
     }
 }
