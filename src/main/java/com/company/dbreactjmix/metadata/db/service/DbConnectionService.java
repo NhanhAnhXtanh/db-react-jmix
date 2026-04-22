@@ -39,21 +39,21 @@ public class DbConnectionService {
             throw new IllegalArgumentException("Connection request is required");
         }
         if (request.getDatabaseType() == null) {
-            throw new IllegalArgumentException("databaseType is required and must be: POSTGRES or MONGODB");
+            throw new IllegalArgumentException("databaseType is required and must be: POSTGRES, MONGODB or RESTAPI");
         }
         if (isBlank(request.getHost())) {
             throw new IllegalArgumentException("host is required");
         }
-        if (isBlank(request.getPort())) {
+        if (request.getDatabaseType() != DatabaseType.RESTAPI && isBlank(request.getPort())) {
             throw new IllegalArgumentException("port is required");
         }
-        if (isBlank(request.getDbName())) {
+        if (request.getDatabaseType() != DatabaseType.RESTAPI && isBlank(request.getDbName())) {
             throw new IllegalArgumentException("dbName is required");
         }
-        if (request.getDatabaseType() != DatabaseType.MONGODB && isBlank(request.getUsername())) {
+        if (request.getDatabaseType() == DatabaseType.POSTGRES && isBlank(request.getUsername())) {
             throw new IllegalArgumentException("username is required");
         }
-        if (request.getDatabaseType() != DatabaseType.MONGODB && request.getPassword() == null) {
+        if (request.getDatabaseType() == DatabaseType.POSTGRES && request.getPassword() == null) {
             throw new IllegalArgumentException("password is required");
         }
     }

@@ -1,6 +1,7 @@
 package com.company.dbreactjmix.metadata.controller;
 
 import com.company.dbreactjmix.metadata.db.service.MetadataJdbcService;
+import com.company.dbreactjmix.metadata.db.service.ApiMetadataService;
 import com.company.dbreactjmix.metadata.db.service.ConnectionConfigService;
 import com.company.dbreactjmix.metadata.db.service.MetaSetSnapshotService;
 import com.company.dbreactjmix.metadata.db.service.MongoMetadataService;
@@ -11,6 +12,7 @@ import com.company.dbreactjmix.metadata.dto.RawQueryRequest;
 import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
 import com.company.dbreactjmix.metadata.dto.SyncCheckRequest;
 import com.company.dbreactjmix.metadata.dto.SyncConfirmRequest;
+import com.company.dbreactjmix.metadata.enums.DatabaseType;
 import com.company.dbreactjmix.metadata.query.SqlBuilderService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -33,19 +35,22 @@ public class MetadataApiController {
     private final ConnectionConfigService connectionConfigService;
     private final MetaSetSnapshotService metaSetSnapshotService;
     private final MongoMetadataService mongoMetadataService;
+    private final ApiMetadataService apiMetadataService;
 
     public MetadataApiController(
             MetadataJdbcService metadataJdbcService,
             SqlBuilderService sqlBuilderService,
             ConnectionConfigService connectionConfigService,
             MetaSetSnapshotService metaSetSnapshotService,
-            MongoMetadataService mongoMetadataService
+            MongoMetadataService mongoMetadataService,
+            ApiMetadataService apiMetadataService
     ) {
         this.metadataJdbcService = metadataJdbcService;
         this.sqlBuilderService = sqlBuilderService;
         this.connectionConfigService = connectionConfigService;
         this.metaSetSnapshotService = metaSetSnapshotService;
         this.mongoMetadataService = mongoMetadataService;
+        this.apiMetadataService = apiMetadataService;
     }
 
     @GetMapping("/ping")
@@ -72,7 +77,11 @@ public class MetadataApiController {
 
     @PostMapping("/query/raw/execute")
     public Map<String, Object> executeRawQuery(@RequestBody RawQueryRequest request) {
-        List<Map<String, Object>> data = request.getConnection().getDatabaseType() == com.company.dbreactjmix.metadata.enums.DatabaseType.MONGODB
+        if (request.getConnection().getDatabaseType() == DatabaseType.RESTAPI) {
+            throw new IllegalArgumentException("Use REST API tab to execute API requests");
+        }
+
+        List<Map<String, Object>> data = request.getConnection().getDatabaseType() == DatabaseType.MONGODB
                 ? mongoMetadataService.runReadQuery(request.getConnection(), request.getSql())
                 : metadataJdbcService.runSelectQuery(request.getConnection(), request.getSql());
 
@@ -85,8 +94,11 @@ public class MetadataApiController {
 
     @PostMapping("/metapack")
     public MetaPackDto buildMetaPack(@RequestBody DbConnectionRequest request) {
-        if (request.getDatabaseType() == com.company.dbreactjmix.metadata.enums.DatabaseType.MONGODB) {
+        if (request.getDatabaseType() == DatabaseType.MONGODB) {
             return mongoMetadataService.buildMetaPack(request);
+        }
+        if (request.getDatabaseType() == DatabaseType.RESTAPI) {
+            return apiMetadataService.buildMetaPack(request);
         }
         return metadataJdbcService.buildMetaPack(request);
     }

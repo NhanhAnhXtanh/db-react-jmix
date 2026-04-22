@@ -231,7 +231,10 @@ public class MetadataJdbcService {
         if (type == DatabaseType.MONGODB) {
             return "mongodb";
         }
-        return "restapi";
+        if (type == DatabaseType.RESTAPI) {
+            return "restapi";
+        }
+        return "postgres";
     }
 
     private String resolveCatalog(DbConnectionRequest request) {

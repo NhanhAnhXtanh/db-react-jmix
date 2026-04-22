@@ -4,7 +4,8 @@ import org.springframework.lang.Nullable;
 
 public enum DatabaseType {
     POSTGRES,
-    MONGODB;
+    MONGODB,
+    RESTAPI;
 
     @Nullable
     public static DatabaseType fromId(String id) {

@@ -18,6 +18,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -28,6 +29,8 @@ import java.util.regex.Pattern;
 
 @Service
 public class MongoMetadataService {
+
+    private static final int SCHEMA_SAMPLE_LIMIT = 200;
 
     private static final Pattern FIND_PATTERN = Pattern.compile(
             "^\\s*db\\.([A-Za-z0-9_\\-]+)\\.find\\s*\\((.*)\\)\\s*;?\\s*$",
@@ -51,7 +54,10 @@ public class MongoMetadataService {
 
                 schemaRows.add(buildCollectionRoot(collectionName));
                 Document validator = readValidator(collectionInfo);
-                schemaRows.addAll(convertValidator(collectionName, validator));
+                Map<String, MetaSetModelDto> collectionRows = new LinkedHashMap<>();
+                convertValidator(collectionName, validator).forEach(row -> collectionRows.put(row.getPath(), row));
+                scanCollectionFields(collectionName, database.getCollection(collectionName)).forEach(row -> collectionRows.putIfAbsent(row.getPath(), row));
+                schemaRows.addAll(collectionRows.values());
             }
 
             MetaPackDto.MetaPackContent content = new MetaPackDto.MetaPackContent();
@@ -151,6 +157,45 @@ public class MongoMetadataService {
         return rows;
     }
 
+    private List<MetaSetModelDto> scanCollectionFields(String collectionName, MongoCollection<Document> collection) {
+        Map<String, MetaSetModelDto> rows = new LinkedHashMap<>();
+        for (Document document : collection.find().limit(SCHEMA_SAMPLE_LIMIT)) {
+            for (Map.Entry<String, Object> entry : document.entrySet()) {
+                scanValue(collectionName, collectionName, entry.getKey(), entry.getValue(), rows);
+            }
+        }
+        return new ArrayList<>(rows.values());
+    }
+
+    private void scanValue(
+            String parentPath,
+            String pathPrefix,
+            String field,
+            Object value,
+            Map<String, MetaSetModelDto> rows
+    ) {
+        String path = pathPrefix + "." + field;
+        String type = inferType(value);
+        rows.putIfAbsent(path, buildFieldRow(field, path, parentPath, type, true));
+
+        if (value instanceof Document document) {
+            for (Map.Entry<String, Object> entry : document.entrySet()) {
+                scanValue(path, path, entry.getKey(), entry.getValue(), rows);
+            }
+            return;
+        }
+
+        if (value instanceof Collection<?> collection) {
+            for (Object item : collection) {
+                if (item instanceof Document itemDocument) {
+                    for (Map.Entry<String, Object> entry : itemDocument.entrySet()) {
+                        scanValue(path, path, entry.getKey(), entry.getValue(), rows);
+                    }
+                }
+            }
+        }
+    }
+
     private void walkProperties(
             String parentPath,
             String pathPrefix,
@@ -205,6 +250,31 @@ public class MongoMetadataService {
     private List<String> readRequired(Document schema) {
         List<String> required = schema.getList("required", String.class);
         return required == null ? List.of() : required;
+    }
+
+    private String inferType(Object value) {
+        if (value instanceof ObjectId) {
+            return "objectId";
+        }
+        if (value instanceof Document) {
+            return "object";
+        }
+        if (value instanceof Collection<?>) {
+            return "array";
+        }
+        if (value instanceof Integer || value instanceof Long || value instanceof Short) {
+            return "integer";
+        }
+        if (value instanceof Number) {
+            return "number";
+        }
+        if (value instanceof Boolean) {
+            return "boolean";
+        }
+        if (value instanceof Date) {
+            return "date";
+        }
+        return "string";
     }
 
     private void validateReadOnly(String query) {
