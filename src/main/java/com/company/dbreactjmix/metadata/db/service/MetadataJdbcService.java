@@ -28,35 +28,59 @@ public class MetadataJdbcService {
         this.connectionService = connectionService;
     }
 
+    private void validateSelectOnly(String sql) {
+        String normalized = sql.strip().replaceAll("\\s+", " ").toLowerCase();
+
+        if (!normalized.startsWith("select") && !normalized.startsWith("with")) {
+            throw new IllegalArgumentException("Only SELECT queries are allowed");
+        }
+
+        // Chặn multi-statement
+        String stripped = normalized.replaceAll(";\\s*$", "");
+        if (stripped.contains(";")) {
+            throw new IllegalArgumentException("Multiple SQL statements are not allowed");
+        }
+
+        // Chặn DML/DDL dù ở bất kỳ vị trí nào
+        String[] forbidden = {"insert ", "update ", "delete ", "drop ", "alter ",
+                              "create ", "truncate ", "execute ", "exec "};
+        for (String keyword : forbidden) {
+            if (normalized.contains(keyword)) {
+                throw new IllegalArgumentException("Forbidden SQL keyword: " + keyword.trim());
+            }
+        }
+    }
+
     public List<Map<String, Object>> runSelectQuery(DbConnectionRequest request, String sql) {
         if (sql == null || sql.isBlank()) {
             return Collections.emptyList();
         }
 
-        String normalized = sql.stripLeading().toLowerCase();
-        if (!normalized.startsWith("select")) {
-            throw new IllegalArgumentException("Only SELECT statements are allowed");
-        }
+        validateSelectOnly(sql);
 
         try (Connection connection = connectionService.getConnection(request);
-             Statement statement = connection.createStatement();
-             ResultSet rs = statement.executeQuery(sql)) {
+             Statement statement = connection.createStatement()) {
 
-            List<Map<String, Object>> result = new ArrayList<>();
-            ResultSetMetaData metaData = rs.getMetaData();
-            int columnCount = metaData.getColumnCount();
+            statement.setQueryTimeout(30);
+            statement.setMaxRows(10000);
 
-            while (rs.next()) {
-                Map<String, Object> row = new LinkedHashMap<>();
-                for (int i = 1; i <= columnCount; i++) {
-                    row.put(metaData.getColumnName(i), rs.getObject(i));
+            try (ResultSet rs = statement.executeQuery(sql)) {
+                List<Map<String, Object>> result = new ArrayList<>();
+                ResultSetMetaData metaData = rs.getMetaData();
+                int columnCount = metaData.getColumnCount();
+
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    for (int i = 1; i <= columnCount; i++) {
+                        row.put(metaData.getColumnName(i), rs.getObject(i));
+                    }
+                    result.add(row);
                 }
-                result.add(row);
-            }
 
-            return result;
+                return result;
+            }
         } catch (SQLException e) {
-            throw new IllegalStateException("Cannot execute SQL query", e);
+            throw new IllegalArgumentException(e.getMessage());
         }
     }
 
