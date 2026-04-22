@@ -3,7 +3,8 @@ package com.company.dbreactjmix.metadata.enums;
 import org.springframework.lang.Nullable;
 
 public enum DatabaseType {
-    POSTGRES;
+    POSTGRES,
+    MONGODB;
 
     @Nullable
     public static DatabaseType fromId(String id) {

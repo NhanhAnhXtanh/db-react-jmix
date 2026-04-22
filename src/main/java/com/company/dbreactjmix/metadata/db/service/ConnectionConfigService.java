@@ -44,8 +44,8 @@ public class ConnectionConfigService {
             config.setHost(request.getHost());
             config.setPort(request.getPort());
             config.setDbName(request.getDbName());
-            config.setUsername(request.getUsername());
-            config.setPassword(request.getPassword());
+            config.setUsername(nullToEmpty(request.getUsername()));
+            config.setPassword(nullToEmpty(request.getPassword()));
             config.setSchema(request.getSchema());
 
             return dataManager.save(config);
@@ -99,15 +99,19 @@ public class ConnectionConfigService {
         if (isBlank(request.getDbName())) {
             throw new IllegalArgumentException("dbName is required");
         }
-        if (isBlank(request.getUsername())) {
+        if (request.getDatabaseType() != DatabaseType.MONGODB && isBlank(request.getUsername())) {
             throw new IllegalArgumentException("username is required");
         }
-        if (request.getPassword() == null) {
+        if (request.getDatabaseType() != DatabaseType.MONGODB && request.getPassword() == null) {
             throw new IllegalArgumentException("password is required");
         }
     }
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 }

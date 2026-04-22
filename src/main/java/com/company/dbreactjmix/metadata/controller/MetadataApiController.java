@@ -3,6 +3,7 @@ package com.company.dbreactjmix.metadata.controller;
 import com.company.dbreactjmix.metadata.db.service.MetadataJdbcService;
 import com.company.dbreactjmix.metadata.db.service.ConnectionConfigService;
 import com.company.dbreactjmix.metadata.db.service.MetaSetSnapshotService;
+import com.company.dbreactjmix.metadata.db.service.MongoMetadataService;
 import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.QueryBuildRequest;
@@ -31,17 +32,20 @@ public class MetadataApiController {
     private final SqlBuilderService sqlBuilderService;
     private final ConnectionConfigService connectionConfigService;
     private final MetaSetSnapshotService metaSetSnapshotService;
+    private final MongoMetadataService mongoMetadataService;
 
     public MetadataApiController(
             MetadataJdbcService metadataJdbcService,
             SqlBuilderService sqlBuilderService,
             ConnectionConfigService connectionConfigService,
-            MetaSetSnapshotService metaSetSnapshotService
+            MetaSetSnapshotService metaSetSnapshotService,
+            MongoMetadataService mongoMetadataService
     ) {
         this.metadataJdbcService = metadataJdbcService;
         this.sqlBuilderService = sqlBuilderService;
         this.connectionConfigService = connectionConfigService;
         this.metaSetSnapshotService = metaSetSnapshotService;
+        this.mongoMetadataService = mongoMetadataService;
     }
 
     @GetMapping("/ping")
@@ -68,7 +72,9 @@ public class MetadataApiController {
 
     @PostMapping("/query/raw/execute")
     public Map<String, Object> executeRawQuery(@RequestBody RawQueryRequest request) {
-        List<Map<String, Object>> data = metadataJdbcService.runSelectQuery(request.getConnection(), request.getSql());
+        List<Map<String, Object>> data = request.getConnection().getDatabaseType() == com.company.dbreactjmix.metadata.enums.DatabaseType.MONGODB
+                ? mongoMetadataService.runReadQuery(request.getConnection(), request.getSql())
+                : metadataJdbcService.runSelectQuery(request.getConnection(), request.getSql());
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("sql", request.getSql());
@@ -79,6 +85,9 @@ public class MetadataApiController {
 
     @PostMapping("/metapack")
     public MetaPackDto buildMetaPack(@RequestBody DbConnectionRequest request) {
+        if (request.getDatabaseType() == com.company.dbreactjmix.metadata.enums.DatabaseType.MONGODB) {
+            return mongoMetadataService.buildMetaPack(request);
+        }
         return metadataJdbcService.buildMetaPack(request);
     }
 

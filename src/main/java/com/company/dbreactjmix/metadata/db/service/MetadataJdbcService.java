@@ -228,6 +228,9 @@ public class MetadataJdbcService {
         if (type == DatabaseType.POSTGRES) {
             return "postgres";
         }
+        if (type == DatabaseType.MONGODB) {
+            return "mongodb";
+        }
         return "restapi";
     }
 
