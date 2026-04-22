@@ -222,5 +222,5 @@
         <addForeignKeyConstraint baseColumnNames="META_SET_ID" baseTableName="META_SYNC"
                                  constraintName="FK_META_SYNC_ON_META_SET" referencedColumnNames="ID"
                                  referencedTableName="META_SET"/>
-</changeSet>
+    </changeSet>
 </databaseChangeLog>

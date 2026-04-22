@@ -80,7 +80,7 @@ public class MetadataApiController {
 
     @PostMapping("/metapack")
     public MetaPackDto buildMetaPack(@RequestBody DbConnectionRequest request) {
-        return metadataJdbcService.buildMetaPack(request);
+        return metadataJdbcService.readDatabaseSchema(request);
     }
 
     @PostMapping("/metapack/save")
