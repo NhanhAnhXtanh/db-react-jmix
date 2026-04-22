@@ -1,11 +1,15 @@
 package com.company.dbreactjmix.metadata.db.service;
 
+import com.company.dbreactjmix.metadata.dto.ColumnAttributesDto;
+import com.company.dbreactjmix.metadata.dto.ColumnDiffDto;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
 import com.company.dbreactjmix.metadata.dto.RelationItemDto;
 import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
+import com.company.dbreactjmix.metadata.dto.SchemaDiffDto;
 import com.company.dbreactjmix.metadata.dto.SyncCheckRequest;
 import com.company.dbreactjmix.metadata.dto.SyncConfirmRequest;
+import com.company.dbreactjmix.metadata.dto.TableDiffDto;
 import com.company.dbreactjmix.metadata.entity.MetadataConnectionConfig;
 import com.company.dbreactjmix.metadata.entity.metapack.MetaPack;
 import com.company.dbreactjmix.metadata.entity.metapack.MetaPackVersion;
@@ -545,11 +549,11 @@ public class MetaSetSnapshotService {
         });
     }
 
-    public Map<String, Object> checkSync(SyncCheckRequest request) {
+    public SchemaDiffDto previewSync(SyncCheckRequest request) {
         if (request.getMetaSetCode() == null || request.getMetaSetCode().isBlank())
             throw new IllegalArgumentException("metaSetCode is required");
 
-        MetaPackDto currentPack = metadataJdbcService.buildMetaPack(request.getConnection());
+        MetaPackDto currentPack = metadataJdbcService.readDatabaseSchema(request.getConnection());
         MetaPackDto.MetaPackContent content = currentPack.getMetaPack();
         List<MetaSetModelDto> allSchema = content.getSchema() != null ? content.getSchema() : List.of();
 
@@ -562,60 +566,35 @@ public class MetaSetSnapshotService {
 
         List<Map<String, Object>> diffs = systemAuthenticator.withSystem(() -> {
             List<Map<String, Object>> result = new ArrayList<>();
-
-            // Dùng MetaSync làm baseline
-            MetaPack metaPack = dataManager.load(MetaPack.class)
-                    .query("e.code = :code")
-                    .parameter("code", request.getMetaSetCode())
-                    .optional()
-                    .orElse(null);
-
-            Map<String, List<MetaSetModelDto>> prevColsByTable = new LinkedHashMap<>();
-            if (metaPack != null) {
-                // Load per-table MetaSync làm baseline
-                List<MetaSet> metaSets = dataManager.load(MetaSet.class)
-                        .query("e.metaPack = :pack")
-                        .parameter("pack", metaPack)
-                        .list();
-                for (MetaSet ms : metaSets) {
-                    MetaSync latestSync = dataManager.load(MetaSync.class)
-                            .query("e.metaSet = :ms order by e.syncVersionNo desc")
-                            .parameter("ms", ms)
-                            .maxResults(1)
-                            .optional()
-                            .orElse(null);
-                    if (latestSync != null && latestSync.getFieldData() != null) {
-                        try {
-                            com.fasterxml.jackson.databind.JsonNode root = storageMapper.readTree(latestSync.getFieldData());
-                            String tableCode = root.has("table") ? root.get("table").asText() : null;
-                            if (tableCode != null && root.has("metaset") && root.get("metaset").isArray()) {
-                                List<MetaSetModelDto> cols = new ArrayList<>();
-                                for (com.fasterxml.jackson.databind.JsonNode colNode : root.get("metaset")) {
-                                    cols.add(storageMapper.treeToValue(colNode, MetaSetModelDto.class));
-                                }
-                                prevColsByTable.put(tableCode, cols);
-                            }
-                        } catch (Exception ignored) {}
-                    }
-                }
-                if (prevColsByTable.isEmpty()) {
-                    // Fallback MetaPackVersion
-                    MetaPackVersion latestVersion = findLatestPackVersion(metaPack);
-                    if (latestVersion != null && latestVersion.getFieldData() != null) {
-                        prevColsByTable = parsePackSyncColumns(latestVersion.getFieldData());
-                    }
-                }
-            }
+            Map<String, List<MetaSetModelDto>> prevColsByTable = loadLatestMetaSyncColumnsByPackCode(request.getMetaSetCode());
 
             java.util.Set<String> currentTableCodes = currentTables.stream()
                     .map(MetaSetModelDto::getCode)
                     .collect(Collectors.toSet());
 
+            boolean allHashesMatch = !prevColsByTable.isEmpty() && currentTableCodes.size() == prevColsByTable.keySet().size();
+            if (allHashesMatch) {
+                for (MetaSetModelDto table : currentTables) {
+                    List<MetaSetModelDto> currentCols = currentColsByTable.getOrDefault(table.getCode(), List.of());
+                    List<MetaSetModelDto> prevCols = prevColsByTable.get(table.getCode());
+                    if (prevCols == null || !toColumnsHash(currentCols).equals(toColumnsHash(prevCols))) {
+                        allHashesMatch = false;
+                        break;
+                    }
+                }
+            }
+
+            if (allHashesMatch) {
+                return new ArrayList<>();
+            }
+
             for (MetaSetModelDto table : currentTables) {
                 List<MetaSetModelDto> currentCols = currentColsByTable.getOrDefault(table.getCode(), List.of());
                 if (!prevColsByTable.containsKey(table.getCode())) {
                     List<String> allCols = currentCols.stream()
-                            .map(MetaSetModelDto::getCode).sorted().collect(Collectors.toList());
+                            .map(MetaSetModelDto::getCode)
+                            .sorted()
+                            .collect(Collectors.toList());
                     Map<String, Object> diff = new LinkedHashMap<>();
                     diff.put("tableCode", table.getCode());
                     diff.put("isNewTable", true);
@@ -623,21 +602,25 @@ public class MetaSetSnapshotService {
                     diff.put("removed", List.of());
                     diff.put("changed", List.of());
                     result.add(diff);
-                } else {
-                    List<MetaSetModelDto> prevCols = prevColsByTable.get(table.getCode());
-                    if (!toColumnsHash(currentCols).equals(toColumnsHash(prevCols))) {
-                        result.add(computeDiff(table.getCode(), prevCols, currentCols));
-                    }
+                    continue;
+                }
+
+                List<MetaSetModelDto> prevCols = prevColsByTable.get(table.getCode());
+                if (!toColumnsHash(currentCols).equals(toColumnsHash(prevCols))) {
+                    result.add(computeDiff(table.getCode(), prevCols, currentCols));
                 }
             }
 
-            for (String prevTableCode : prevColsByTable.keySet()) {
-                if (!currentTableCodes.contains(prevTableCode)) {
+            for (Map.Entry<String, List<MetaSetModelDto>> entry : prevColsByTable.entrySet()) {
+                if (!currentTableCodes.contains(entry.getKey())) {
                     Map<String, Object> diff = new LinkedHashMap<>();
-                    diff.put("tableCode", prevTableCode);
+                    diff.put("tableCode", entry.getKey());
                     diff.put("isDeletedTable", true);
                     diff.put("added", List.of());
-                    diff.put("removed", List.of());
+                    diff.put("removed", entry.getValue().stream()
+                            .map(MetaSetModelDto::getCode)
+                            .sorted()
+                            .collect(Collectors.toList()));
                     diff.put("changed", List.of());
                     result.add(diff);
                 }
@@ -646,10 +629,106 @@ public class MetaSetSnapshotService {
             return result;
         });
 
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("hasChanges", !diffs.isEmpty());
-        response.put("diffs", diffs);
-        return response;
+        return transformToNestedShape(diffs);
+    }
+
+    private SchemaDiffDto transformToNestedShape(List<Map<String, Object>> flatDiffs) {
+        SchemaDiffDto result = new SchemaDiffDto();
+        List<TableDiffDto> tables = new ArrayList<>();
+
+        for (Map<String, Object> flatDiff : flatDiffs) {
+            TableDiffDto tableDto = new TableDiffDto();
+            tableDto.setName((String) flatDiff.get("tableCode"));
+
+            List<ColumnDiffDto> columnDtos = new ArrayList<>();
+
+            if (Boolean.TRUE.equals(flatDiff.get("isNewTable"))) {
+                tableDto.setStatus("added");
+                @SuppressWarnings("unchecked")
+                List<String> addedCols = (List<String>) flatDiff.get("added");
+                for (String colCode : addedCols) {
+                    ColumnDiffDto colDto = new ColumnDiffDto();
+                    colDto.setName(colCode);
+                    colDto.setStatus("added");
+                    columnDtos.add(colDto);
+                }
+            } else if (Boolean.TRUE.equals(flatDiff.get("isDeletedTable"))) {
+                tableDto.setStatus("removed");
+                @SuppressWarnings("unchecked")
+                List<String> removedCols = (List<String>) flatDiff.get("removed");
+                for (String colCode : removedCols) {
+                    ColumnDiffDto colDto = new ColumnDiffDto();
+                    colDto.setName(colCode);
+                    colDto.setStatus("removed");
+                    columnDtos.add(colDto);
+                }
+            } else {
+                tableDto.setStatus("modified");
+
+                @SuppressWarnings("unchecked")
+                List<String> addedCols = (List<String>) flatDiff.get("added");
+                if (addedCols != null) {
+                    for (String colCode : addedCols) {
+                        ColumnDiffDto colDto = new ColumnDiffDto();
+                        colDto.setName(colCode);
+                        colDto.setStatus("added");
+                        columnDtos.add(colDto);
+                    }
+                }
+
+                @SuppressWarnings("unchecked")
+                List<String> removedCols = (List<String>) flatDiff.get("removed");
+                if (removedCols != null) {
+                    for (String colCode : removedCols) {
+                        ColumnDiffDto colDto = new ColumnDiffDto();
+                        colDto.setName(colCode);
+                        colDto.setStatus("removed");
+                        columnDtos.add(colDto);
+                    }
+                }
+
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> changedCols = (List<Map<String, Object>>) flatDiff.get("changed");
+                if (changedCols != null) {
+                    for (Map<String, Object> changedCol : changedCols) {
+                        ColumnDiffDto colDto = new ColumnDiffDto();
+                        colDto.setName((String) changedCol.get("code"));
+                        colDto.setStatus("modified");
+
+                        if (changedCol.containsKey("previous")) {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> prevMap = (Map<String, Object>) changedCol.get("previous");
+                            if (prevMap != null) {
+                                ColumnAttributesDto prev = new ColumnAttributesDto();
+                                prev.setType((String) prevMap.get("type"));
+                                prev.setNullable((Boolean) prevMap.getOrDefault("nullable", false));
+                                colDto.setPrevious(prev);
+                            }
+                        }
+
+                        if (changedCol.containsKey("current")) {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> currMap = (Map<String, Object>) changedCol.get("current");
+                            if (currMap != null) {
+                                ColumnAttributesDto curr = new ColumnAttributesDto();
+                                curr.setType((String) currMap.get("type"));
+                                curr.setNullable((Boolean) currMap.getOrDefault("nullable", false));
+                                colDto.setCurrent(curr);
+                            }
+                        }
+
+                        columnDtos.add(colDto);
+                    }
+                }
+            }
+
+            tableDto.setColumns(columnDtos);
+            tables.add(tableDto);
+        }
+
+        result.setHasChanges(!tables.isEmpty());
+        result.setTables(tables);
+        return result;
     }
 
     private Map<String, List<MetaSetModelDto>> parsePackSyncColumns(String fieldData) {
@@ -674,11 +753,11 @@ public class MetaSetSnapshotService {
         }
     }
 
-    public Map<String, Object> confirmSync(SyncConfirmRequest request) {
+    public Map<String, Object> acceptSync(SyncConfirmRequest request) {
         if (request.getMetaSetCode() == null || request.getMetaSetCode().isBlank())
             throw new IllegalArgumentException("metaSetCode is required");
 
-        MetaPackDto metaPackDto = metadataJdbcService.buildMetaPack(request.getConnection());
+        MetaPackDto metaPackDto = metadataJdbcService.readDatabaseSchema(request.getConnection());
         MetaPackDto.MetaPackContent content = metaPackDto.getMetaPack();
         List<MetaSetModelDto> allSchema = content.getSchema() != null ? content.getSchema() : List.of();
         List<MetaSetModelDto> tables = allSchema.stream()
@@ -687,8 +766,6 @@ public class MetaSetSnapshotService {
         Map<String, List<MetaSetModelDto>> columnsByTable = allSchema.stream()
                 .filter(f -> f.getPath_parent() != null)
                 .collect(Collectors.groupingBy(MetaSetModelDto::getPath_parent));
-
-        saveMetaPackSnapshot(request.getMetaSetCode(), request.getMetaSetName(), content, tables, columnsByTable);
 
         MetadataConnectionConfig connectionConfig = null;
         if (request.getConnectionCode() != null && !request.getConnectionCode().isBlank()) {
@@ -705,55 +782,18 @@ public class MetaSetSnapshotService {
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("changed", changedCount > 0);
-        result.put("savedCount", tables.size());
+        result.put("savedCount", changedCount);
         return result;
     }
 
-    // Mỗi lần sync = full snapshot: tạo 1 row MetaSync cho mỗi table hiện tại.
-    // syncVersionNo là cấp pack (tất cả table trong cùng 1 sync có cùng version).
-    // Nếu không có bất kỳ thay đổi nào (hash trùng, không thêm/xoá table) → không lưu.
     private int upsertMetaSync(String packCode, String packName,
                                List<MetaSetModelDto> tables,
                                Map<String, List<MetaSetModelDto>> columnsByTable,
                                MetadataConnectionConfig connectionConfig) {
         return systemAuthenticator.withSystem(() -> {
-            MetaPack metaPack = dataManager.load(MetaPack.class)
-                    .query("e.code = :code")
-                    .parameter("code", packCode)
-                    .optional()
-                    .orElse(null);
+            Map<String, String> existingHashes = loadLatestMetaSyncHashesByPackCode(packCode);
+            int maxSyncNo = findMaxSyncVersionNoByPackCode(packCode);
 
-            // Load tất cả hash hiện có theo tableCode + tính maxSyncNo
-            Map<String, String> existingHashes = new LinkedHashMap<>();
-            int maxSyncNo = 0;
-            if (metaPack != null) {
-                List<MetaSet> existingMetaSets = dataManager.load(MetaSet.class)
-                        .query("e.metaPack = :pack")
-                        .parameter("pack", metaPack)
-                        .list();
-                for (MetaSet ms : existingMetaSets) {
-                    MetaSync latestSync = dataManager.load(MetaSync.class)
-                            .query("e.metaSet = :ms order by e.syncVersionNo desc")
-                            .parameter("ms", ms)
-                            .maxResults(1)
-                            .optional()
-                            .orElse(null);
-                    if (latestSync != null && latestSync.getFieldData() != null) {
-                        try {
-                            com.fasterxml.jackson.databind.JsonNode root = storageMapper.readTree(latestSync.getFieldData());
-                            String tableCode = root.has("table") ? root.get("table").asText() : null;
-                            if (tableCode != null) {
-                                existingHashes.put(tableCode, latestSync.getHashData());
-                            }
-                        } catch (Exception ignored) {}
-                        if (latestSync.getSyncVersionNo() != null) {
-                            maxSyncNo = Math.max(maxSyncNo, latestSync.getSyncVersionNo());
-                        }
-                    }
-                }
-            }
-
-            // Tính hash hiện tại của từng table
             Map<String, String> currentHashes = new LinkedHashMap<>();
             for (MetaSetModelDto table : tables) {
                 String tableCode = table.getCode();
@@ -761,11 +801,10 @@ public class MetaSetSnapshotService {
                 currentHashes.put(tableCode, toColumnsHash(columns));
             }
 
-            // So sánh: có thay đổi nếu khác hash, thêm table mới, hoặc xoá table
             boolean anyChange = !currentHashes.keySet().equals(existingHashes.keySet());
             if (!anyChange) {
-                for (Map.Entry<String, String> e : currentHashes.entrySet()) {
-                    if (!e.getValue().equals(existingHashes.get(e.getKey()))) {
+                for (Map.Entry<String, String> entry : currentHashes.entrySet()) {
+                    if (!Objects.equals(entry.getValue(), existingHashes.get(entry.getKey()))) {
                         anyChange = true;
                         break;
                     }
@@ -773,12 +812,10 @@ public class MetaSetSnapshotService {
             }
 
             if (!anyChange) {
-                return 0; // Không có thay đổi → không lưu version mới
+                return 0;
             }
 
             final int packSyncVersion = maxSyncNo + 1;
-
-            // Lưu tất cả table hiện tại làm 1 full snapshot version
             for (MetaSetModelDto table : tables) {
                 String tableCode = table.getCode();
                 String metaSetCode = packCode + "-" + tableCode;
@@ -787,7 +824,6 @@ public class MetaSetSnapshotService {
 
                 MetaSet metaSet = findOrCreateMetaSet(metaSetCode,
                         packName + "." + (table.getName() != null ? table.getName() : tableCode));
-
                 String fieldData = toTableMetaSyncFieldData(tableCode, columns);
 
                 MetaSync sync = dataManager.create(MetaSync.class);
@@ -801,6 +837,81 @@ public class MetaSetSnapshotService {
             return tables.size();
         });
     }
+
+    private Map<String, List<MetaSetModelDto>> loadLatestMetaSyncColumnsByPackCode(String packCode) {
+        List<MetaSync> latestRows = loadLatestMetaSyncRowsByPackCode(packCode);
+        Map<String, List<MetaSetModelDto>> result = new LinkedHashMap<>();
+        for (MetaSync sync : latestRows) {
+            if (sync.getFieldData() == null) continue;
+            try {
+                JsonNode root = storageMapper.readTree(sync.getFieldData());
+                String tableCode = root.has("table") ? root.get("table").asText() : null;
+                if (tableCode == null || !root.has("metaset") || !root.get("metaset").isArray()) continue;
+                List<MetaSetModelDto> cols = new ArrayList<>();
+                for (JsonNode colNode : root.get("metaset")) {
+                    cols.add(storageMapper.treeToValue(colNode, MetaSetModelDto.class));
+                }
+                result.put(tableCode, cols);
+            } catch (Exception ignored) {}
+        }
+        return result;
+    }
+
+    private Map<String, String> loadLatestMetaSyncHashesByPackCode(String packCode) {
+        Map<String, String> result = new LinkedHashMap<>();
+        for (MetaSync sync : loadLatestMetaSyncRowsByPackCode(packCode)) {
+            if (sync.getFieldData() == null) continue;
+            try {
+                JsonNode root = storageMapper.readTree(sync.getFieldData());
+                String tableCode = root.has("table") ? root.get("table").asText() : null;
+                if (tableCode != null) {
+                    result.put(tableCode, sync.getHashData());
+                }
+            } catch (Exception ignored) {}
+        }
+        return result;
+    }
+
+    private int findMaxSyncVersionNoByPackCode(String packCode) {
+        return loadLatestMetaSyncRowsByPackCode(packCode).stream()
+                .map(MetaSync::getSyncVersionNo)
+                .filter(Objects::nonNull)
+                .max(Integer::compareTo)
+                .orElse(0);
+    }
+
+    private List<MetaSync> loadLatestMetaSyncRowsByPackCode(String packCode) {
+        String codePrefix = packCode + "-%";
+        return dataManager.load(MetaSync.class)
+                .query("select e from MetaSync e where e.syncVersionNo = (select max(x.syncVersionNo) from MetaSync x where x.metaSet.code like :codePrefix) and e.metaSet.code like :codePrefix order by e.metaSet.code asc")
+                .parameter("codePrefix", codePrefix)
+                .list();
+    }
+
+    private List<Map<String, Object>> toMetaSyncSchemaResponse(List<MetaSync> rows) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (MetaSync sync : rows) {
+            if (sync.getFieldData() == null) continue;
+            try {
+                JsonNode root = storageMapper.readTree(sync.getFieldData());
+                Map<String, Object> tableData = storageMapper.convertValue(root, new TypeReference<Map<String, Object>>() {});
+                result.add(tableData);
+            } catch (Exception ignored) {}
+        }
+        return result;
+    }
+
+    public List<Map<String, Object>> getLatestMetaSyncSchema(String packCode) {
+        if (packCode == null || packCode.isBlank()) return null;
+        return systemAuthenticator.withSystem(() -> {
+            List<Map<String, Object>> result = toMetaSyncSchemaResponse(loadLatestMetaSyncRowsByPackCode(packCode));
+            return result.isEmpty() ? null : result;
+        });
+    }
+
+    // Mỗi lần sync = full snapshot: tạo 1 row MetaSync cho mỗi table hiện tại.
+    // syncVersionNo là cấp pack (tất cả table trong cùng 1 sync có cùng version).
+    // Nếu không có bất kỳ thay đổi nào (hash trùng, không thêm/xoá table) → không lưu.
 
     // fieldData: { "table": "users", "metaset": [ {id, code, name, dataType, path, path_parent, ...} ] }
     private String toTableMetaSyncFieldData(String tableCode, List<MetaSetModelDto> columns) {
@@ -829,43 +940,6 @@ public class MetaSetSnapshotService {
         }
     }
 
-    // Trả về raw fieldData của từng MetaSync row mới nhất: [{ table, metaset: [...] }, ...]
-    public List<Map<String, Object>> getLatestMetaSyncSchema(String packCode) {
-        if (packCode == null || packCode.isBlank()) return null;
-        return systemAuthenticator.withSystem(() -> {
-            MetaPack pack = dataManager.load(MetaPack.class)
-                    .query("e.code = :code")
-                    .parameter("code", packCode)
-                    .optional()
-                    .orElse(null);
-            if (pack == null) return null;
-
-            List<MetaSet> metaSets = dataManager.load(MetaSet.class)
-                    .query("e.metaPack = :pack order by e.code asc")
-                    .parameter("pack", pack)
-                    .list();
-            if (metaSets.isEmpty()) return null;
-
-            List<Map<String, Object>> result = new ArrayList<>();
-            for (MetaSet ms : metaSets) {
-                MetaSync latest = dataManager.load(MetaSync.class)
-                        .query("e.metaSet = :ms order by e.syncVersionNo desc")
-                        .parameter("ms", ms)
-                        .maxResults(1)
-                        .optional()
-                        .orElse(null);
-                if (latest == null || latest.getFieldData() == null) continue;
-                try {
-                    com.fasterxml.jackson.databind.JsonNode root = storageMapper.readTree(latest.getFieldData());
-                    Map<String, Object> tableData = storageMapper.convertValue(root, new TypeReference<Map<String, Object>>() {});
-                    result.add(tableData);
-                } catch (Exception ignored) {}
-            }
-
-            return result.isEmpty() ? null : result;
-        });
-    }
-
     private Map<String, Object> computeDiff(String tableCode,
                                              List<MetaSetModelDto> prev,
                                              List<MetaSetModelDto> current) {
@@ -886,13 +960,31 @@ public class MetaSetSnapshotService {
 
         List<Map<String, Object>> changed = currentMap.entrySet().stream()
                 .filter(e -> prevMap.containsKey(e.getKey()))
-                .filter(e -> !Objects.equals(e.getValue().getDataType(),
-                        prevMap.get(e.getKey()).getDataType()))
+                .filter(e -> {
+                    boolean typeChanged = !Objects.equals(e.getValue().getDataType(),
+                            prevMap.get(e.getKey()).getDataType());
+                    boolean nullableChanged = e.getValue().isNull() != prevMap.get(e.getKey()).isNull();
+                    return typeChanged || nullableChanged;
+                })
                 .map(e -> {
+                    MetaSetModelDto curr = e.getValue();
+                    MetaSetModelDto prev_col = prevMap.get(e.getKey());
+
                     Map<String, Object> c = new LinkedHashMap<>();
                     c.put("code", e.getKey());
-                    c.put("from", prevMap.get(e.getKey()).getDataType());
-                    c.put("to", e.getValue().getDataType());
+
+                    // Add previous attributes
+                    Map<String, Object> prevAttrs = new LinkedHashMap<>();
+                    prevAttrs.put("type", prev_col.getDataType());
+                    prevAttrs.put("nullable", prev_col.isNull());
+                    c.put("previous", prevAttrs);
+
+                    // Add current attributes
+                    Map<String, Object> currAttrs = new LinkedHashMap<>();
+                    currAttrs.put("type", curr.getDataType());
+                    currAttrs.put("nullable", curr.isNull());
+                    c.put("current", currAttrs);
+
                     return c;
                 })
                 .collect(Collectors.toList());

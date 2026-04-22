@@ -31,7 +31,11 @@ public class DbConnectionService {
             throw new IllegalStateException("Driver not found for " + databaseType, e);
         }
 
-        return DriverManager.getConnection(url, request.getUsername(), request.getPassword());
+        Connection connection = DriverManager.getConnection(url, request.getUsername(), request.getPassword());
+        if (request.getSchema() != null && !request.getSchema().isBlank()) {
+            connection.setSchema(request.getSchema());
+        }
+        return connection;
     }
 
     private void validateConnectionRequest(DbConnectionRequest request) {
