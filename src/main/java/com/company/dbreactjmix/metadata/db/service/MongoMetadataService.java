@@ -8,7 +8,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mongodb.ConnectionString;
-import com.mongodb.MongoCommandException;
 import com.mongodb.client.AggregateIterable;
 import com.mongodb.client.ChangeStreamIterable;
 import com.mongodb.client.FindIterable;
@@ -19,6 +18,7 @@ import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.changestream.ChangeStreamDocument;
 import com.mongodb.client.model.changestream.FullDocument;
 import io.jmix.core.DataManager;
+import io.jmix.core.security.SystemAuthenticator;
 import org.bson.BsonArray;
 import org.bson.Document;
 import org.bson.types.ObjectId;
@@ -51,7 +51,7 @@ import java.util.regex.Pattern;
 @Service
 public class MongoMetadataService {
 
-    private static final int FAST_SAMPLE_SIZE = 5000;
+    private static final int FAST_SAMPLE_SIZE = 1000;
     private static final int DEEP_SCAN_BATCH_SIZE = 1000;
     private static final int DEFAULT_QUERY_LIMIT = 100;
     private static final int MAX_QUERY_LIMIT = 5000;
@@ -71,10 +71,12 @@ public class MongoMetadataService {
 
     private final DataManager dataManager;
     private final ObjectMapper objectMapper;
+    private final SystemAuthenticator systemAuthenticator;
 
-    public MongoMetadataService(DataManager dataManager, ObjectMapper objectMapper) {
+    public MongoMetadataService(DataManager dataManager, ObjectMapper objectMapper, SystemAuthenticator systemAuthenticator) {
         this.dataManager = dataManager;
         this.objectMapper = objectMapper;
+        this.systemAuthenticator = systemAuthenticator;
     }
 
     public MetaPackDto buildMetaPack(DbConnectionRequest request) {
@@ -105,7 +107,7 @@ public class MongoMetadataService {
         snapshot.setStartedAt(OffsetDateTime.now());
         snapshot.setCompletedAt(null);
         snapshot.setErrorMessage(null);
-        dataManager.save(snapshot);
+        saveEntity(snapshot);
 
         CompletableFuture.runAsync(() -> {
             try {
@@ -117,7 +119,7 @@ public class MongoMetadataService {
                 failed.setStatus("FAILED");
                 failed.setCompletedAt(OffsetDateTime.now());
                 failed.setErrorMessage(e.getMessage());
-                dataManager.save(failed);
+                saveEntity(failed);
             }
         });
 
@@ -255,7 +257,7 @@ public class MongoMetadataService {
             saveSnapshot(request, metaPack, snapshot.getStatus(), snapshot.getScannedDocs(), updatedCheckpoints);
         } else if (!updatedCheckpoints.equals(checkpoints)) {
             snapshot.setCheckpointJson(writeJson(updatedCheckpoints));
-            dataManager.save(snapshot);
+            saveEntity(snapshot);
         }
     }
 
@@ -313,7 +315,7 @@ public class MongoMetadataService {
             snapshot.setSchemaHash(hashSchema(metaPack.getMetaPack().getSchema()));
         }
         snapshot.setCheckpointJson(writeJson(checkpoints));
-        dataManager.save(snapshot);
+        saveEntity(snapshot);
     }
 
     private CollectionScanResult scanCollectionFields(
@@ -340,11 +342,10 @@ public class MongoMetadataService {
     }
 
     private Iterable<Document> sampleDocuments(MongoCollection<Document> collection) {
-        try {
-            return collection.aggregate(List.of(new Document("$sample", new Document("size", FAST_SAMPLE_SIZE))));
-        } catch (MongoCommandException e) {
-            return collection.find().limit(FAST_SAMPLE_SIZE);
-        }
+        return collection.find()
+                .sort(new Document("_id", -1))
+                .limit(FAST_SAMPLE_SIZE)
+                .maxTime(QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     private void scanDocument(String collectionName, Document document, Map<String, MetaSetModelDto> rows) {
@@ -485,19 +486,21 @@ public class MongoMetadataService {
         snapshot.setScannedDocs(scannedDocs);
         snapshot.setCompletedAt(OffsetDateTime.now());
         snapshot.setErrorMessage(null);
-        dataManager.save(snapshot);
+        saveEntity(snapshot);
     }
 
     private Optional<MongoSchemaSnapshot> findSnapshot(DbConnectionRequest request) {
-        return dataManager.load(MongoSchemaSnapshot.class)
-                .query("e.connectionKey = :key")
-                .parameter("key", buildSchemaCacheKey(request))
-                .optional();
+        return systemAuthenticator.withSystem(() ->
+                dataManager.load(MongoSchemaSnapshot.class)
+                        .query("e.connectionKey = :key")
+                        .parameter("key", buildSchemaCacheKey(request))
+                        .optional()
+        );
     }
 
     private MongoSchemaSnapshot findOrCreateSnapshot(DbConnectionRequest request) {
         return findSnapshot(request).orElseGet(() -> {
-            MongoSchemaSnapshot snapshot = dataManager.create(MongoSchemaSnapshot.class);
+            MongoSchemaSnapshot snapshot = systemAuthenticator.withSystem(() -> dataManager.create(MongoSchemaSnapshot.class));
             snapshot.setConnectionKey(buildSchemaCacheKey(request));
             snapshot.setStatus("NONE");
             snapshot.setScannedDocs(0L);
@@ -521,17 +524,35 @@ public class MongoMetadataService {
     }
 
     private String buildConnectionString(DbConnectionRequest request) {
+        if (isMongoUri(request.getHost())) {
+            return appendMongoOptions(request.getHost(), request);
+        }
+
         String userInfo = "";
         if (!isBlank(request.getUsername())) {
             userInfo = encode(request.getUsername()) + ":" + encode(request.getPassword() == null ? "" : request.getPassword()) + "@";
         }
 
-        String authSource = "";
-        if (!isBlank(request.getSchema())) {
-            authSource = "?authSource=" + encode(request.getSchema());
-        }
+        return appendMongoOptions("mongodb://" + userInfo + request.getHost() + ":" + request.getPort() + "/" + request.getDbName(), request);
+    }
 
-        return "mongodb://" + userInfo + request.getHost() + ":" + request.getPort() + "/" + request.getDbName() + authSource;
+    private String appendMongoOptions(String uri, DbConnectionRequest request) {
+        List<String> options = new ArrayList<>();
+        if (!isBlank(request.getSchema()) && !uri.contains("authSource=")) {
+            options.add("authSource=" + encode(request.getSchema()));
+        }
+        if (!uri.contains("serverSelectionTimeoutMS=")) options.add("serverSelectionTimeoutMS=5000");
+        if (!uri.contains("connectTimeoutMS=")) options.add("connectTimeoutMS=5000");
+        if (!uri.contains("socketTimeoutMS=")) options.add("socketTimeoutMS=30000");
+
+        if (options.isEmpty()) {
+            return uri;
+        }
+        return uri + (uri.contains("?") ? "&" : "?") + String.join("&", options);
+    }
+
+    private boolean isMongoUri(String value) {
+        return value != null && (value.startsWith("mongodb://") || value.startsWith("mongodb+srv://"));
     }
 
     private Document readValidator(Document collectionInfo) {
@@ -684,6 +705,10 @@ public class MongoMetadataService {
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Cannot serialize Mongo schema snapshot", e);
         }
+    }
+
+    private MongoSchemaSnapshot saveEntity(MongoSchemaSnapshot snapshot) {
+        return systemAuthenticator.withSystem(() -> dataManager.save(snapshot));
     }
 
     private MetaPackDto readMetaPack(String json) {

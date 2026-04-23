@@ -76,11 +76,15 @@ public class ConnectionConfigService {
 
     public String buildCode(DbConnectionRequest request) {
         String host = request.getHost().replaceAll("[^A-Za-z0-9]", "-");
-        return String.format("%s-%s-%s-%s",
+        if (host.length() > 48) {
+            host = host.substring(0, 48);
+        }
+        String code = String.format("%s-%s-%s-%s",
                 request.getDatabaseType().name().toLowerCase(),
                 host,
                 request.getPort(),
                 request.getDbName());
+        return code.length() <= 100 ? code : code.substring(0, 100);
     }
 
     private void validateRequest(DbConnectionRequest request) {
