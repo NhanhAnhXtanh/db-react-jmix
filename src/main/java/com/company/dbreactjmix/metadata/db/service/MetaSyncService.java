@@ -164,7 +164,6 @@ public class MetaSyncService {
     ) {
         return systemAuthenticator.withSystem(() -> {
             Map<String, String> existingHashes = loadLatestMetaSyncHashesByPackCode(packCode);
-            int maxSyncNo = findMaxSyncVersionNoByPackCode(packCode);
 
             Map<String, String> currentHashes = new LinkedHashMap<>();
             for (MetaSetModelDto table : tables) {
@@ -187,27 +186,68 @@ public class MetaSyncService {
                 return 0;
             }
 
-            int packSyncVersion = maxSyncNo + 1;
+            int writtenCount = 0;
             for (MetaSetModelDto table : tables) {
                 String tableCode = table.getCode();
+                String hash = currentHashes.get(tableCode);
+                String previousHash = existingHashes.get(tableCode);
+
+                if (Objects.equals(hash, previousHash)) {
+                    continue;
+                }
+
                 String metaSetCode = packCode + "-" + tableCode;
                 List<MetaSetModelDto> columns = columnsByTable.getOrDefault(tableCode, List.of());
-                String hash = currentHashes.get(tableCode);
 
                 MetaSet metaSet = findOrCreateMetaSet(metaSetCode,
                         packName + "." + (table.getName() != null ? table.getName() : tableCode));
                 String fieldData = codec.toTableMetaSyncFieldData(tableCode, columns);
+
+                int nextVer = findMaxSyncVersionForTable(metaSetCode) + 1;
 
                 MetaSync sync = dataManager.create(MetaSync.class);
                 sync.setMetaSet(metaSet);
                 sync.setConnectionConfig(connectionConfig);
                 sync.setFieldData(fieldData);
                 sync.setHashData(hash);
-                sync.setSyncVersionNo(packSyncVersion);
+                sync.setSyncVersionNo(nextVer);
+                sync.setIsDeleted(false);
                 dataManager.save(sync);
+                writtenCount++;
             }
-            return tables.size();
+
+            for (Map.Entry<String, String> entry : existingHashes.entrySet()) {
+                String previousTableCode = entry.getKey();
+                if (currentHashes.containsKey(previousTableCode)) {
+                    continue;
+                }
+                String metaSetCode = packCode + "-" + previousTableCode;
+                MetaSet metaSet = findOrCreateMetaSet(metaSetCode,
+                        packName + "." + previousTableCode);
+
+                int nextVer = findMaxSyncVersionForTable(metaSetCode) + 1;
+
+                MetaSync sync = dataManager.create(MetaSync.class);
+                sync.setMetaSet(metaSet);
+                sync.setConnectionConfig(connectionConfig);
+                sync.setFieldData(codec.toTableMetaSyncFieldData(previousTableCode, List.of()));
+                sync.setHashData(entry.getValue());
+                sync.setSyncVersionNo(nextVer);
+                sync.setIsDeleted(true);
+                dataManager.save(sync);
+                writtenCount++;
+            }
+
+            return writtenCount;
         });
+    }
+
+    private int findMaxSyncVersionForTable(String metaSetCode) {
+        Integer max = dataManager.loadValue(
+                "select max(e.syncVersionNo) from MetaSync e where e.metaSet.code = :code",
+                Integer.class
+        ).parameter("code", metaSetCode).optional().orElse(0);
+        return max != null ? max : 0;
     }
 
     private Map<String, List<MetaSetModelDto>> loadLatestMetaSyncColumnsByPackCode(String packCode) {
@@ -252,20 +292,23 @@ public class MetaSyncService {
         return result;
     }
 
-    private int findMaxSyncVersionNoByPackCode(String packCode) {
-        return loadLatestMetaSyncRowsByPackCode(packCode).stream()
-                .map(MetaSync::getSyncVersionNo)
-                .filter(Objects::nonNull)
-                .max(Integer::compareTo)
-                .orElse(0);
-    }
-
     private List<MetaSync> loadLatestMetaSyncRowsByPackCode(String packCode) {
         String codePrefix = packCode + "-%";
-        return dataManager.load(MetaSync.class)
-                .query("select e from MetaSync e where e.syncVersionNo = (select max(x.syncVersionNo) from MetaSync x where x.metaSet.code like :codePrefix) and e.metaSet.code like :codePrefix order by e.metaSet.code asc")
+        List<MetaSync> rows = dataManager.load(MetaSync.class)
+                .query("select e from MetaSync e " +
+                        "where e.metaSet.code like :codePrefix " +
+                        "and e.syncVersionNo = (select max(x.syncVersionNo) from MetaSync x where x.metaSet.id = e.metaSet.id) " +
+                        "order by e.metaSet.code asc")
                 .parameter("codePrefix", codePrefix)
                 .list();
+        List<MetaSync> result = new ArrayList<>();
+        for (MetaSync sync : rows) {
+            if (Boolean.TRUE.equals(sync.getIsDeleted())) {
+                continue;
+            }
+            result.add(sync);
+        }
+        return result;
     }
 
     private List<Map<String, Object>> toMetaSyncSchemaResponse(List<MetaSync> rows) {

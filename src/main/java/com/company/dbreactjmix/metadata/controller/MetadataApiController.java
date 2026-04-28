@@ -3,8 +3,10 @@ package com.company.dbreactjmix.metadata.controller;
 import com.company.dbreactjmix.metadata.db.service.MetadataJdbcService;
 import com.company.dbreactjmix.metadata.db.service.ConnectionConfigService;
 import com.company.dbreactjmix.metadata.db.service.MetaSetSnapshotService;
+import com.company.dbreactjmix.metadata.db.service.MetaSyncCommitService;
 import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
+import com.company.dbreactjmix.metadata.dto.MetaSyncCommitRequest;
 import com.company.dbreactjmix.metadata.dto.QueryBuildRequest;
 import com.company.dbreactjmix.metadata.dto.RawQueryRequest;
 import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
@@ -32,17 +34,20 @@ public class MetadataApiController {
     private final SqlBuilderService sqlBuilderService;
     private final ConnectionConfigService connectionConfigService;
     private final MetaSetSnapshotService metaSetSnapshotService;
+    private final MetaSyncCommitService metaSyncCommitService;
 
     public MetadataApiController(
             MetadataJdbcService metadataJdbcService,
             SqlBuilderService sqlBuilderService,
             ConnectionConfigService connectionConfigService,
-            MetaSetSnapshotService metaSetSnapshotService
+            MetaSetSnapshotService metaSetSnapshotService,
+            MetaSyncCommitService metaSyncCommitService
     ) {
         this.metadataJdbcService = metadataJdbcService;
         this.sqlBuilderService = sqlBuilderService;
         this.connectionConfigService = connectionConfigService;
         this.metaSetSnapshotService = metaSetSnapshotService;
+        this.metaSyncCommitService = metaSyncCommitService;
     }
 
     @GetMapping("/ping")
@@ -130,6 +135,25 @@ public class MetadataApiController {
     @PostMapping("/sync/accept")
     public Map<String, Object> acceptSync(@RequestBody SyncConfirmRequest request) {
         return metaSetSnapshotService.acceptSync(request);
+    }
+
+    @PostMapping("/metasync/commit")
+    public Map<String, Object> commitMetaSync(@RequestBody MetaSyncCommitRequest request) {
+        return metaSyncCommitService.commit(request);
+    }
+
+    @GetMapping("/metasync/{packCode}/commits")
+    public List<Map<String, Object>> listMetaSyncCommits(@PathVariable("packCode") String packCode) {
+        return metaSyncCommitService.listCommits(packCode);
+    }
+
+    @GetMapping("/metasync/{packCode}/commit/{versionNo}")
+    public Map<String, Object> getMetaSyncCommit(
+            @PathVariable("packCode") String packCode,
+            @PathVariable("versionNo") Integer versionNo
+    ) {
+        Map<String, Object> detail = metaSyncCommitService.getCommitDetail(packCode, versionNo);
+        return detail != null ? detail : Map.of();
     }
 
     @GetMapping("/connections")
