@@ -144,12 +144,16 @@ public class MongoMetadataService {
                 saveSnapshot(request, full.metaPack(), "FULL", full.scannedDocs(), full.checkpoints());
                 startChangeStreamIfSupported(request);
             } catch (Exception e) {
-                MongoSchemaSnapshot failed = findOrCreateSnapshot(request);
-                failed.setStatus("FAILED");
-                failed.setCompletedAt(OffsetDateTime.now());
-                failed.setErrorMessage(e.getMessage());
-                failed.setCurrentCollection(null);
-                saveEntity(failed);
+                try {
+                    MongoSchemaSnapshot failed = findOrCreateSnapshot(request);
+                    failed.setStatus("FAILED");
+                    failed.setCompletedAt(OffsetDateTime.now());
+                    failed.setErrorMessage(e.getMessage());
+                    failed.setCurrentCollection(null);
+                    saveEntity(failed);
+                } catch (Exception ignored) {
+                    // Best-effort status update
+                }
             }
         });
 
@@ -817,11 +821,21 @@ public class MongoMetadataService {
         if (snapshot == null) {
             return;
         }
-        snapshot.setCurrentCollection(collectionName);
-        snapshot.setProcessedCollections(processedCollections);
-        snapshot.setTotalCollections(totalCollections);
-        snapshot.setScannedDocs(scannedDocs);
-        saveEntity(snapshot);
+        try {
+            MongoSchemaSnapshot fresh = systemAuthenticator.withSystem(() ->
+                    dataManager.load(MongoSchemaSnapshot.class)
+                            .id(snapshot.getId())
+                            .optional()
+                            .orElse(snapshot)
+            );
+            fresh.setCurrentCollection(collectionName);
+            fresh.setProcessedCollections(processedCollections);
+            fresh.setTotalCollections(totalCollections);
+            fresh.setScannedDocs(scannedDocs);
+            saveEntity(fresh);
+        } catch (Exception ignored) {
+            // Progress update is non-critical — skip on concurrent write conflict
+        }
     }
 
     private record MongoFindCommand(
