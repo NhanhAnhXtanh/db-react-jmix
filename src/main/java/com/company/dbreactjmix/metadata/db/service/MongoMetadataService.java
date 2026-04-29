@@ -580,6 +580,9 @@ public class MongoMetadataService {
     }
 
     private String buildConnectionString(DbConnectionRequest request) {
+        if (isBlank(request.getHost())) {
+            throw new IllegalArgumentException("Host hoặc Mongo URI không được để trống");
+        }
         if (isMongoUri(request.getHost())) {
             return appendMongoOptions(request.getHost(), request);
         }
