@@ -84,12 +84,15 @@ public class MetadataJdbcService {
         }
     }
 
-    public MetaPackDto buildMetaPack(DbConnectionRequest request) {
+    public MetaPackDto readDatabaseSchema(DbConnectionRequest request) {
+        String schema = resolveSchema(request);
         try (Connection connection = connectionService.getConnection(request)) {
-            DatabaseMetaData metaData = connection.getMetaData();
+            if (schema != null && !schema.isBlank()) {
+                connection.setSchema(schema);
+            }
 
+            DatabaseMetaData metaData = connection.getMetaData();
             String catalog = resolveCatalog(request);
-            String schema = resolveSchema(request);
 
             List<String> tables = new ArrayList<>();
             try (ResultSet rs = metaData.getTables(catalog, schema, "%", new String[]{"TABLE"})) {
@@ -120,7 +123,10 @@ public class MetadataJdbcService {
             response.setMetaPack(content);
             return response;
         } catch (SQLException e) {
-            throw new IllegalStateException("Cannot build metaPack from database metadata", e);
+            throw new IllegalStateException(
+                    "Không đọc được metadata từ database '" + request.getDbName() + "' / schema '" + schema + "': " + e.getMessage(),
+                    e
+            );
         }
     }
 

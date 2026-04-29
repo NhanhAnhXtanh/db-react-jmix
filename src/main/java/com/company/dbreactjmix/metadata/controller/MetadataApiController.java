@@ -11,6 +11,7 @@ import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.QueryBuildRequest;
 import com.company.dbreactjmix.metadata.dto.RawQueryRequest;
 import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
+import com.company.dbreactjmix.metadata.dto.SchemaDiffDto;
 import com.company.dbreactjmix.metadata.dto.SyncCheckRequest;
 import com.company.dbreactjmix.metadata.dto.SyncConfirmRequest;
 import com.company.dbreactjmix.metadata.enums.DatabaseType;
@@ -162,14 +163,14 @@ public class MetadataApiController {
         return data != null ? data : List.of();
     }
 
-    @PostMapping("/sync/check")
-    public Map<String, Object> syncCheck(@RequestBody SyncCheckRequest request) {
-        return metaSetSnapshotService.checkSync(request);
+    @PostMapping("/sync/preview")
+    public SchemaDiffDto previewSync(@RequestBody SyncCheckRequest request) {
+        return metaSetSnapshotService.previewSync(request);
     }
 
-    @PostMapping("/sync/confirm")
-    public Map<String, Object> syncConfirm(@RequestBody SyncConfirmRequest request) {
-        return metaSetSnapshotService.confirmSync(request);
+    @PostMapping("/sync/accept")
+    public Map<String, Object> acceptSync(@RequestBody SyncConfirmRequest request) {
+        return metaSetSnapshotService.acceptSync(request);
     }
 
     @GetMapping("/connections")
