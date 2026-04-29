@@ -44,7 +44,7 @@ public class SqlBuilderService {
             clauses.add(limitClause);
         }
 
-        return clauses.stream().collect(Collectors.joining("\n"));
+        return String.join("\n", clauses);
     }
 
     private String buildSelectClause(List<String> fields) {
