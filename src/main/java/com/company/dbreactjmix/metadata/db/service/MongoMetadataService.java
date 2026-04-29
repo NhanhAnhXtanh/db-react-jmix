@@ -596,13 +596,14 @@ public class MongoMetadataService {
     }
 
     private String appendMongoOptions(String uri, DbConnectionRequest request) {
+        boolean isSrv = uri.startsWith("mongodb+srv://");
         List<String> options = new ArrayList<>();
         if (!isBlank(request.getSchema()) && !uri.contains("authSource=")) {
             options.add("authSource=" + encode(request.getSchema()));
         }
         if (!uri.contains("serverSelectionTimeoutMS=")) options.add("serverSelectionTimeoutMS=5000");
-        if (!uri.contains("connectTimeoutMS=")) options.add("connectTimeoutMS=5000");
-        if (!uri.contains("socketTimeoutMS=")) options.add("socketTimeoutMS=30000");
+        if (!isSrv && !uri.contains("connectTimeoutMS=")) options.add("connectTimeoutMS=5000");
+        if (!isSrv && !uri.contains("socketTimeoutMS=")) options.add("socketTimeoutMS=30000");
 
         if (options.isEmpty()) {
             return uri;
