@@ -5,7 +5,6 @@ import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.MissingNode;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -33,12 +32,14 @@ public class ApiMetadataService {
     }
 
     public MetaPackDto buildMetaPack(DbConnectionRequest request) {
-        JsonNode spec = fetchOpenApiSpec(request);
+        JsonNode payload = fetchJson(request);
+        String rootCode = !isBlank(request.getDbName()) ? request.getDbName() : "api";
+        String endpoint = !isBlank(request.getSchema()) ? request.getSchema() : request.getHost();
         List<MetaSetModelDto> schemaRows = new ArrayList<>();
-        JsonNode paths = spec.path("paths");
-        if (paths.isObject()) {
-            paths.fields().forEachRemaining(pathEntry -> readPath(pathEntry.getKey(), pathEntry.getValue(), schemaRows));
-        }
+
+        schemaRows.add(buildRow(rootCode, rootCode, null, "endpoint", false, endpoint));
+        JsonNode sample = payload.isArray() && !payload.isEmpty() ? payload.get(0) : payload;
+        walkValue(rootCode, rootCode, sample, schemaRows);
 
         MetaPackDto.MetaPackContent content = new MetaPackDto.MetaPackContent();
         content.setVersion("1.0");
@@ -51,12 +52,12 @@ public class ApiMetadataService {
         return response;
     }
 
-    private JsonNode fetchOpenApiSpec(DbConnectionRequest request) {
-        URI uri = URI.create(resolveSpecUrl(request));
+    private JsonNode fetchJson(DbConnectionRequest request) {
+        URI uri = URI.create(resolveRequestUrl(request));
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(20))
                 .GET()
-                .header("Accept", "application/json, application/yaml;q=0.8, */*;q=0.5");
+                .header("Accept", "application/json, */*;q=0.5");
 
         if (!isBlank(request.getUsername()) || !isBlank(request.getPassword())) {
             String token = java.util.Base64.getEncoder()
@@ -67,27 +68,27 @@ public class ApiMetadataService {
         try {
             HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IllegalArgumentException("OpenAPI fetch failed: HTTP " + response.statusCode());
+                throw new IllegalArgumentException("API request failed: HTTP " + response.statusCode());
             }
             return objectMapper.readTree(response.body());
         } catch (IOException e) {
-            throw new IllegalArgumentException("OpenAPI response must be JSON. YAML import is not supported yet.", e);
+            throw new IllegalArgumentException("API response must be JSON.", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("OpenAPI fetch interrupted", e);
+            throw new IllegalStateException("API request interrupted", e);
         }
     }
 
-    private String resolveSpecUrl(DbConnectionRequest request) {
+    private String resolveRequestUrl(DbConnectionRequest request) {
         String host = normalizeUrl(request.getHost());
-        String schema = request.getSchema();
-        if (!isBlank(schema) && isAbsoluteUrl(schema)) {
-            return schema;
+        String endpoint = request.getSchema();
+        if (!isBlank(endpoint) && isAbsoluteUrl(endpoint)) {
+            return endpoint;
         }
-        if (isBlank(schema)) {
+        if (isBlank(endpoint)) {
             return host;
         }
-        String suffix = schema.startsWith("/") ? schema : "/" + schema;
+        String suffix = endpoint.startsWith("/") ? endpoint : "/" + endpoint;
         return host.endsWith("/") ? host.substring(0, host.length() - 1) + suffix : host + suffix;
     }
 
@@ -98,123 +99,35 @@ public class ApiMetadataService {
         return isAbsoluteUrl(value) ? value : "http://" + value;
     }
 
-    private void readPath(String apiPath, JsonNode pathNode, List<MetaSetModelDto> rows) {
-        rows.add(buildRow(apiPath, apiPath, null, "endpoint", false, null));
+    private void walkValue(String parentPath, String pathPrefix, JsonNode value, List<MetaSetModelDto> rows) {
+        JsonNode sample = value.isArray() && !value.isEmpty() ? value.get(0) : value;
+        if (!sample.isObject()) {
+            return;
+        }
 
-        Iterator<Map.Entry<String, JsonNode>> fields = pathNode.fields();
+        Iterator<Map.Entry<String, JsonNode>> fields = sample.fields();
         while (fields.hasNext()) {
             Map.Entry<String, JsonNode> entry = fields.next();
-            String method = entry.getKey().toLowerCase();
-            if (!isHttpMethod(method)) {
-                continue;
-            }
-
-            JsonNode operation = entry.getValue();
-            String operationPath = apiPath + "." + method;
-            String description = textOrNull(operation.path("summary"));
-            if (description == null) {
-                description = textOrNull(operation.path("operationId"));
-            }
-            rows.add(buildRow(method.toUpperCase(), operationPath, apiPath, "operation", false, description));
-            readParameters(operationPath, pathNode.path("parameters"), rows);
-            readParameters(operationPath, operation.path("parameters"), rows);
-            readSchemaBranch(operationPath, operation.path("requestBody"), "request", rows);
-            readResponses(operationPath, operation.path("responses"), rows);
-        }
-    }
-
-    private void readParameters(String parentPath, JsonNode parameters, List<MetaSetModelDto> rows) {
-        if (!parameters.isArray()) {
-            return;
-        }
-        for (JsonNode parameter : parameters) {
-            String name = textOrNull(parameter.path("name"));
-            if (name == null) {
-                continue;
-            }
-            String location = textOrNull(parameter.path("in"));
-            String path = parentPath + ".param." + name;
-            String type = schemaType(parameter.path("schema"), location == null ? "parameter" : location);
-            rows.add(buildRow(name, path, parentPath, type, !parameter.path("required").asBoolean(false), location));
-        }
-    }
-
-    private void readSchemaBranch(String parentPath, JsonNode container, String code, List<MetaSetModelDto> rows) {
-        JsonNode schema = readContentSchema(container.path("content"));
-        if (schema.isMissingNode()) {
-            return;
-        }
-        String branchPath = parentPath + "." + code;
-        rows.add(buildRow(code, branchPath, parentPath, schemaType(schema, "object"), true, null));
-        walkSchema(branchPath, branchPath, schema, rows);
-    }
-
-    private void readResponses(String parentPath, JsonNode responses, List<MetaSetModelDto> rows) {
-        if (!responses.isObject()) {
-            return;
-        }
-        responses.fields().forEachRemaining(entry -> {
-            String status = entry.getKey();
-            JsonNode schema = readContentSchema(entry.getValue().path("content"));
-            if (schema.isMissingNode()) {
-                return;
-            }
-            String responsePath = parentPath + ".response." + status;
-            rows.add(buildRow("response_" + status, responsePath, parentPath, schemaType(schema, "object"), true, textOrNull(entry.getValue().path("description"))));
-            walkSchema(responsePath, responsePath, schema, rows);
-        });
-    }
-
-    private void walkSchema(String parentPath, String pathPrefix, JsonNode schema, List<MetaSetModelDto> rows) {
-        JsonNode resolved = schema.path("items").isObject() ? schema.path("items") : schema;
-        JsonNode properties = resolved.path("properties");
-        if (!properties.isObject()) {
-            return;
-        }
-
-        properties.fields().forEachRemaining(entry -> {
             String field = entry.getKey();
-            JsonNode definition = entry.getValue();
+            JsonNode child = entry.getValue();
             String path = pathPrefix + "." + field;
-            rows.add(buildRow(field, path, parentPath, schemaType(definition, "object"), true, textOrNull(definition.path("description"))));
-            if (definition.path("properties").isObject() || definition.path("items").path("properties").isObject()) {
-                walkSchema(path, path, definition, rows);
-            }
-        });
-    }
+            rows.add(buildRow(field, path, parentPath, inferType(child), child.isNull(), null));
 
-    private JsonNode readContentSchema(JsonNode content) {
-        if (!content.isObject()) {
-            return MissingNode.getInstance();
-        }
-        JsonNode jsonSchema = content.path("application/json").path("schema");
-        if (!jsonSchema.isMissingNode()) {
-            return jsonSchema;
-        }
-        Iterator<JsonNode> values = content.elements();
-        while (values.hasNext()) {
-            JsonNode schema = values.next().path("schema");
-            if (!schema.isMissingNode()) {
-                return schema;
+            JsonNode nested = child.isArray() && !child.isEmpty() ? child.get(0) : child;
+            if (nested.isObject()) {
+                walkValue(path, path, nested, rows);
             }
         }
-        return MissingNode.getInstance();
     }
 
-    private String schemaType(JsonNode schema, String fallback) {
-        String type = textOrNull(schema.path("type"));
-        if (type != null) {
-            return type;
-        }
-        String ref = textOrNull(schema.path("$ref"));
-        if (ref != null) {
-            int slash = ref.lastIndexOf('/');
-            return slash >= 0 ? ref.substring(slash + 1) : ref;
-        }
-        if (schema.path("properties").isObject()) {
-            return "object";
-        }
-        return fallback;
+    private String inferType(JsonNode node) {
+        if (node == null || node.isNull()) return "null";
+        if (node.isArray()) return "array";
+        if (node.isObject()) return "object";
+        if (node.isBoolean()) return "boolean";
+        if (node.isIntegralNumber()) return "integer";
+        if (node.isFloatingPointNumber() || node.isNumber()) return "number";
+        return "string";
     }
 
     private MetaSetModelDto buildRow(String code, String path, String parentPath, String type, boolean nullable, String description) {
@@ -231,19 +144,8 @@ public class ApiMetadataService {
         return row;
     }
 
-    private boolean isHttpMethod(String method) {
-        return switch (method) {
-            case "get", "post", "put", "patch", "delete", "head", "options", "trace" -> true;
-            default -> false;
-        };
-    }
-
     private boolean isAbsoluteUrl(String value) {
         return value != null && (value.startsWith("http://") || value.startsWith("https://"));
-    }
-
-    private String textOrNull(JsonNode node) {
-        return node.isTextual() && !node.asText().isBlank() ? node.asText() : null;
     }
 
     private boolean isBlank(String value) {

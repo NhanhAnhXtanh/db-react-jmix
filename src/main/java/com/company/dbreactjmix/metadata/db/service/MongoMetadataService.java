@@ -792,7 +792,8 @@ public class MongoMetadataService {
                 nullToEmpty(request.getPort()),
                 nullToEmpty(request.getDbName()),
                 nullToEmpty(request.getSchema()),
-                nullToEmpty(request.getUsername())
+                nullToEmpty(request.getUsername()),
+                nullToEmpty(request.getPassword())
         );
     }
 

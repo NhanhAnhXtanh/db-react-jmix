@@ -224,6 +224,17 @@ public class MetadataApiController {
                 return response;
             }
         }
+        if (request.getDatabaseType() == DatabaseType.RESTAPI) {
+            MetaPackDto metaPack = apiMetadataService.buildMetaPack(request);
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("status", "ok");
+            response.put("database", request.getDbName());
+            response.put("product", "REST API");
+            response.put("endpoints", metaPack.getMetaPack().getSchema().stream()
+                    .filter(item -> item.getPath_parent() == null)
+                    .count());
+            return response;
+        }
         throw new IllegalArgumentException("Connection test is not supported for this database type");
     }
 }
