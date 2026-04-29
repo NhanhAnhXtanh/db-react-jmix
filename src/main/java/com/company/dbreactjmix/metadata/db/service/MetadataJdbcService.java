@@ -129,6 +129,10 @@ public class MetadataJdbcService {
         }
     }
 
+    public MetaPackDto buildMetaPack(DbConnectionRequest request) {
+        return readDatabaseSchema(request);
+    }
+
     private MetaSetModelDto buildTableRoot(String table) {
         MetaSetModelDto root = new MetaSetModelDto();
         root.setId(table);

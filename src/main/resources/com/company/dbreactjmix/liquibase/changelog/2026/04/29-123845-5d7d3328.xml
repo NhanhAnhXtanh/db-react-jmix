@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                      http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd"
+        objectQuotingStrategy="QUOTE_ONLY_RESERVED_WORDS">
+    <changeSet id="1" author="db-react-jmix">
+        <createTable tableName="MONGO_SCHEMA_SNAPSHOT">
+            <column name="ID" type="UUID">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_MONGO_SCHEMA_SNAPSHOT"/>
+            </column>
+            <column name="VERSION" type="INT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="CONNECTION_KEY" type="VARCHAR(512)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="STATUS" type="VARCHAR(30)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="SCHEMA_HASH" type="VARCHAR(64)"/>
+            <column name="SCHEMA_JSON" type="CLOB"/>
+            <column name="CHECKPOINT_JSON" type="CLOB"/>
+            <column name="RESUME_TOKEN_JSON" type="CLOB"/>
+            <column name="SCANNED_DOCS" type="BIGINT"/>
+            <column name="TOTAL_COLLECTIONS" type="INT"/>
+            <column name="PROCESSED_COLLECTIONS" type="INT"/>
+            <column name="CURRENT_COLLECTION" type="VARCHAR(255)"/>
+            <column name="ERROR_MESSAGE" type="VARCHAR(2000)"/>
+            <column name="STARTED_AT" type="${offsetDateTime.type}"/>
+            <column name="COMPLETED_AT" type="${offsetDateTime.type}"/>
+        </createTable>
+    </changeSet>
+    <changeSet id="2" author="db-react-jmix">
+        <createIndex indexName="IDX_MONGO_SCHEMA_SNAPSHOT_KEY" tableName="MONGO_SCHEMA_SNAPSHOT" unique="true">
+            <column name="CONNECTION_KEY"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>
