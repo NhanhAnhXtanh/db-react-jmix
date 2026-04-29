@@ -92,10 +92,9 @@ public class MetadataJdbcService {
             }
 
             DatabaseMetaData metaData = connection.getMetaData();
-            String catalog = resolveCatalog(request);
 
             List<String> tables = new ArrayList<>();
-            try (ResultSet rs = metaData.getTables(catalog, schema, "%", new String[]{"TABLE"})) {
+            try (ResultSet rs = metaData.getTables(null, schema, "%", new String[]{"TABLE"})) {
                 while (rs.next()) {
                     tables.add(rs.getString("TABLE_NAME"));
                 }
@@ -107,10 +106,10 @@ public class MetadataJdbcService {
             for (String table : tables) {
                 schemaRows.add(buildTableRoot(table));
 
-                Map<String, Boolean> primaryKeyMap = loadPrimaryKeyMap(metaData, catalog, schema, table);
-                schemaRows.addAll(loadFieldRows(metaData, catalog, schema, table, primaryKeyMap));
+                Map<String, Boolean> primaryKeyMap = loadPrimaryKeyMap(metaData, schema, table);
+                schemaRows.addAll(loadFieldRows(metaData, schema, table, primaryKeyMap));
 
-                relations.addAll(loadRelationRows(metaData, catalog, schema, table));
+                relations.addAll(loadRelationRows(metaData, schema, table));
             }
 
             MetaPackDto.MetaPackContent content = new MetaPackDto.MetaPackContent();
@@ -147,13 +146,12 @@ public class MetadataJdbcService {
 
     private List<MetaSetModelDto> loadFieldRows(
             DatabaseMetaData metaData,
-            String catalog,
             String schema,
             String table,
             Map<String, Boolean> primaryKeyMap
     ) throws SQLException {
         List<MetaSetModelDto> rows = new ArrayList<>();
-        try (ResultSet rs = metaData.getColumns(catalog, schema, table, "%")) {
+        try (ResultSet rs = metaData.getColumns(null, schema, table, "%")) {
             while (rs.next()) {
                 String column = rs.getString("COLUMN_NAME");
                 String path = table + "." + column;
@@ -183,12 +181,11 @@ public class MetadataJdbcService {
 
     private Map<String, Boolean> loadPrimaryKeyMap(
             DatabaseMetaData metaData,
-            String catalog,
             String schema,
             String table
     ) throws SQLException {
         Map<String, Boolean> map = new LinkedHashMap<>();
-        try (ResultSet rs = metaData.getPrimaryKeys(catalog, schema, table)) {
+        try (ResultSet rs = metaData.getPrimaryKeys(null, schema, table)) {
             while (rs.next()) {
                 String column = rs.getString("COLUMN_NAME");
                 if (column != null) {
@@ -201,12 +198,11 @@ public class MetadataJdbcService {
 
     private List<RelationItemDto> loadRelationRows(
             DatabaseMetaData metaData,
-            String catalog,
             String schema,
             String table
     ) throws SQLException {
         List<RelationItemDto> rows = new ArrayList<>();
-        try (ResultSet rs = metaData.getImportedKeys(catalog, schema, table)) {
+        try (ResultSet rs = metaData.getImportedKeys(null, schema, table)) {
             while (rs.next()) {
                 String sourceTable = rs.getString("FKTABLE_NAME");
                 String sourceField = rs.getString("FKCOLUMN_NAME");

@@ -1,0 +1,50 @@
+package com.company.dbreactjmix.metadata.dto;
+
+public class MetaSyncCommitRequest {
+
+    private String metaSetCode;
+    private String metaSetName;
+    private String connectionCode;
+    private DbConnectionRequest connection;
+    private String commitMessage;
+
+    public String getMetaSetCode() {
+        return metaSetCode;
+    }
+
+    public void setMetaSetCode(String metaSetCode) {
+        this.metaSetCode = metaSetCode;
+    }
+
+    public String getMetaSetName() {
+        return metaSetName;
+    }
+
+    public void setMetaSetName(String metaSetName) {
+        this.metaSetName = metaSetName;
+    }
+
+    public String getConnectionCode() {
+        return connectionCode;
+    }
+
+    public void setConnectionCode(String connectionCode) {
+        this.connectionCode = connectionCode;
+    }
+
+    public DbConnectionRequest getConnection() {
+        return connection;
+    }
+
+    public void setConnection(DbConnectionRequest connection) {
+        this.connection = connection;
+    }
+
+    public String getCommitMessage() {
+        return commitMessage;
+    }
+
+    public void setCommitMessage(String commitMessage) {
+        this.commitMessage = commitMessage;
+    }
+}

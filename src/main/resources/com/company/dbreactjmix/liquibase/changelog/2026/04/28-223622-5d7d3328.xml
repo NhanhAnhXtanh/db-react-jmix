@@ -6,15 +6,21 @@
                       http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd"
         objectQuotingStrategy="QUOTE_ONLY_RESERVED_WORDS">
     <changeSet id="1" author="db-react-jmix">
-        <createTable tableName="META_SYNC">
+        <createTable tableName="META_SYNC_COMMIT">
             <column name="ID" type="UUID">
-                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_META_SYNC"/>
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_META_SYNC_COMMIT"/>
             </column>
-            <column name="META_SET_ID" type="UUID"/>
-            <column name="CONNECTION_CONFIG_ID" type="UUID"/>
-            <column name="FIELD_DATA" type="CLOB"/>
-            <column name="HASH_DATA" type="CLOB"/>
-            <column name="SYNC_VERSION_NO" type="INT"/>
+            <column name="PACK_CODE" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="VERSION_NO" type="INT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="COMMIT_MESSAGE" type="CLOB">
+                <constraints nullable="false"/>
+            </column>
+            <column name="DIFF_JSON" type="CLOB"/>
+            <column name="SUMMARY_JSON" type="CLOB"/>
             <column name="VERSION" type="INT">
                 <constraints nullable="false"/>
             </column>
@@ -27,13 +33,15 @@
         </createTable>
     </changeSet>
     <changeSet id="2" author="db-react-jmix">
-        <addForeignKeyConstraint baseColumnNames="CONNECTION_CONFIG_ID" baseTableName="META_SYNC"
-                                 constraintName="FK_META_SYNC_ON_CONNECTION_CONFIG" referencedColumnNames="ID"
-                                 referencedTableName="META_CONNECTION_CONFIG"/>
+        <addColumn tableName="META_SYNC">
+            <column name="IS_DELETED" type="BOOLEAN"/>
+        </addColumn>
+
+        <addNotNullConstraint columnName="IS_DELETED" defaultNullValue="false" tableName="META_SYNC"/>
     </changeSet>
     <changeSet id="3" author="db-react-jmix">
-        <addForeignKeyConstraint baseColumnNames="META_SET_ID" baseTableName="META_SYNC"
-                                 constraintName="FK_META_SYNC_ON_META_SET" referencedColumnNames="ID"
-                                 referencedTableName="META_SET"/>
+        <createIndex indexName="IDX_META_SYNC_COMMIT_PACK" tableName="META_SYNC_COMMIT">
+            <column name="PACK_CODE"/>
+        </createIndex>
     </changeSet>
 </databaseChangeLog>

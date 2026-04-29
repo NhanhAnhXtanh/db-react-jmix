@@ -1,6 +1,5 @@
 package com.company.dbreactjmix.metadata.entity.metaset;
 
-import com.company.dbreactjmix.metadata.entity.MetadataConnectionConfig;
 import io.jmix.core.annotation.DeletedBy;
 import io.jmix.core.annotation.DeletedDate;
 import io.jmix.core.entity.annotation.JmixGeneratedValue;
@@ -15,36 +14,35 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 @JmixEntity
-@Table(name = "META_SYNC")
+@Table(name = "META_SYNC_COMMIT", indexes = {
+        @Index(name = "IDX_META_SYNC_COMMIT_PACK", columnList = "PACK_CODE"),
+        @Index(name = "UK_META_SYNC_COMMIT_PACK_VERSION", columnList = "PACK_CODE, VERSION_NO", unique = true)
+})
 @Entity
-public class MetaSync {
+public class MetaSyncCommit {
 
     @JmixGeneratedValue
     @Column(name = "ID", nullable = false)
     @Id
     private UUID id;
 
-    @JoinColumn(name = "META_SET_ID")
-    @ManyToOne(fetch = FetchType.LAZY)
-    private MetaSet metaSet;
+    @Column(name = "PACK_CODE", nullable = false)
+    private String packCode;
 
-    @JoinColumn(name = "CONNECTION_CONFIG_ID")
-    @ManyToOne(fetch = FetchType.LAZY)
-    private MetadataConnectionConfig connectionConfig;
+    @Column(name = "VERSION_NO", nullable = false)
+    private Integer versionNo;
 
-    @Column(name = "FIELD_DATA")
+    @Column(name = "COMMIT_MESSAGE", nullable = false)
     @Lob
-    private String fieldData;
+    private String commitMessage;
 
-    @Column(name = "HASH_DATA")
+    @Column(name = "DIFF_JSON")
     @Lob
-    private String hashData;
+    private String diffJson;
 
-    @Column(name = "SYNC_VERSION_NO")
-    private Integer syncVersionNo;
-
-    @Column(name = "IS_DELETED", nullable = false)
-    private Boolean isDeleted = false;
+    @Column(name = "SUMMARY_JSON")
+    @Lob
+    private String summaryJson;
 
     @Column(name = "VERSION", nullable = false)
     @Version
@@ -77,23 +75,20 @@ public class MetaSync {
     public UUID getId() { return id; }
     public void setId(UUID id) { this.id = id; }
 
-    public MetaSet getMetaSet() { return metaSet; }
-    public void setMetaSet(MetaSet metaSet) { this.metaSet = metaSet; }
+    public String getPackCode() { return packCode; }
+    public void setPackCode(String packCode) { this.packCode = packCode; }
 
-    public MetadataConnectionConfig getConnectionConfig() { return connectionConfig; }
-    public void setConnectionConfig(MetadataConnectionConfig connectionConfig) { this.connectionConfig = connectionConfig; }
+    public Integer getVersionNo() { return versionNo; }
+    public void setVersionNo(Integer versionNo) { this.versionNo = versionNo; }
 
-    public String getFieldData() { return fieldData; }
-    public void setFieldData(String fieldData) { this.fieldData = fieldData; }
+    public String getCommitMessage() { return commitMessage; }
+    public void setCommitMessage(String commitMessage) { this.commitMessage = commitMessage; }
 
-    public String getHashData() { return hashData; }
-    public void setHashData(String hashData) { this.hashData = hashData; }
+    public String getDiffJson() { return diffJson; }
+    public void setDiffJson(String diffJson) { this.diffJson = diffJson; }
 
-    public Integer getSyncVersionNo() { return syncVersionNo; }
-    public void setSyncVersionNo(Integer syncVersionNo) { this.syncVersionNo = syncVersionNo; }
-
-    public Boolean getIsDeleted() { return isDeleted; }
-    public void setIsDeleted(Boolean isDeleted) { this.isDeleted = isDeleted; }
+    public String getSummaryJson() { return summaryJson; }
+    public void setSummaryJson(String summaryJson) { this.summaryJson = summaryJson; }
 
     public Integer getVersion() { return version; }
     public void setVersion(Integer version) { this.version = version; }
