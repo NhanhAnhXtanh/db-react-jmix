@@ -8,6 +8,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mongodb.ConnectionString;
+import com.mongodb.MongoSecurityException;
 import com.mongodb.client.AggregateIterable;
 import com.mongodb.client.ChangeStreamIterable;
 import com.mongodb.client.FindIterable;
@@ -20,6 +21,7 @@ import com.mongodb.client.model.changestream.FullDocument;
 import io.jmix.core.DataManager;
 import io.jmix.core.security.SystemAuthenticator;
 import org.bson.BsonArray;
+import org.bson.BsonDocument;
 import org.bson.Document;
 import org.bson.types.ObjectId;
 import org.springframework.stereotype.Service;
@@ -97,6 +99,31 @@ public class MongoMetadataService {
         return sampled.metaPack();
     }
 
+    public Map<String, Object> testConnection(DbConnectionRequest request) {
+        try (MongoClient client = createClient(request)) {
+            String databaseName = isBlank(request.getDbName()) ? "admin" : request.getDbName();
+            MongoDatabase database = client.getDatabase(databaseName);
+            Document pingResult = database.runCommand(new Document("ping", 1));
+
+            List<String> collections = new ArrayList<>();
+            for (String name : database.listCollectionNames()) {
+                collections.add(name);
+                if (collections.size() >= 5) {
+                    break;
+                }
+            }
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("status", "ok");
+            response.put("database", databaseName);
+            response.put("collectionsPreview", collections);
+            response.put("ping", pingResult.get("ok"));
+            return response;
+        } catch (MongoSecurityException e) {
+            throw e;
+        }
+    }
+
     public Map<String, Object> startDeepScan(DbConnectionRequest request) {
         MongoSchemaSnapshot snapshot = findOrCreateSnapshot(request);
         if ("SCANNING".equals(snapshot.getStatus())) {
@@ -107,11 +134,13 @@ public class MongoMetadataService {
         snapshot.setStartedAt(OffsetDateTime.now());
         snapshot.setCompletedAt(null);
         snapshot.setErrorMessage(null);
+        snapshot.setCurrentCollection(null);
+        snapshot.setProcessedCollections(0);
         saveEntity(snapshot);
 
         CompletableFuture.runAsync(() -> {
             try {
-                MongoSchemaScanResult full = scanSchema(request, true);
+                MongoSchemaScanResult full = scanSchema(request, true, this::updateScanProgress, snapshot);
                 saveSnapshot(request, full.metaPack(), "FULL", full.scannedDocs(), full.checkpoints());
                 startChangeStreamIfSupported(request);
             } catch (Exception e) {
@@ -119,6 +148,7 @@ public class MongoMetadataService {
                 failed.setStatus("FAILED");
                 failed.setCompletedAt(OffsetDateTime.now());
                 failed.setErrorMessage(e.getMessage());
+                failed.setCurrentCollection(null);
                 saveEntity(failed);
             }
         });
@@ -174,11 +204,21 @@ public class MongoMetadataService {
     }
 
     private MongoSchemaScanResult scanSchema(DbConnectionRequest request, boolean fullScan) {
+        return scanSchema(request, fullScan, null, null);
+    }
+
+    private MongoSchemaScanResult scanSchema(DbConnectionRequest request, boolean fullScan, ScanProgressListener progressListener, MongoSchemaSnapshot snapshot) {
         try (MongoClient client = createClient(request)) {
             MongoDatabase database = client.getDatabase(request.getDbName());
             Map<String, String> checkpoints = new LinkedHashMap<>();
             List<MetaSetModelDto> schemaRows = new ArrayList<>();
             long scannedDocs = 0L;
+            List<String> collections = database.listCollectionNames().into(new ArrayList<>());
+            if (snapshot != null) {
+                snapshot.setTotalCollections((int) collections.stream().filter(name -> !name.startsWith("system.")).count());
+                saveEntity(snapshot);
+            }
+            int processedCollections = 0;
 
             for (Document collectionInfo : database.listCollections()) {
                 String collectionName = collectionInfo.getString("name");
@@ -197,6 +237,10 @@ public class MongoMetadataService {
                     checkpoints.put(collectionName, scanResult.lastObjectIdHex());
                 }
                 schemaRows.addAll(collectionRows.values());
+                processedCollections++;
+                if (progressListener != null) {
+                    progressListener.onProgress(snapshot, collectionName, processedCollections, snapshot != null && snapshot.getTotalCollections() != null ? snapshot.getTotalCollections() : processedCollections, scannedDocs);
+                }
             }
 
             MetaPackDto.MetaPackContent content = new MetaPackDto.MetaPackContent();
@@ -270,12 +314,16 @@ public class MongoMetadataService {
         CompletableFuture<Void> watcher = CompletableFuture.runAsync(() -> {
             try (MongoClient client = createClient(request)) {
                 MongoDatabase database = client.getDatabase(request.getDbName());
+                MongoSchemaSnapshot snapshot = findSnapshot(request).orElse(null);
                 ChangeStreamIterable<Document> stream = database.watch().fullDocument(FullDocument.UPDATE_LOOKUP);
+                if (snapshot != null && !isBlank(snapshot.getResumeTokenJson())) {
+                    stream = stream.resumeAfter(BsonDocument.parse(snapshot.getResumeTokenJson()));
+                }
                 for (ChangeStreamDocument<Document> change : stream) {
                     if (change.getNamespace() == null || change.getFullDocument() == null) {
                         continue;
                     }
-                    updateSnapshotWithDocument(request, change.getNamespace().getCollectionName(), change.getFullDocument());
+                    updateSnapshotWithDocument(request, change.getNamespace().getCollectionName(), change.getFullDocument(), change.getResumeToken());
                 }
             } catch (Exception ignored) {
                 CHANGE_STREAMS.remove(key);
@@ -284,7 +332,7 @@ public class MongoMetadataService {
         CHANGE_STREAMS.put(key, watcher);
     }
 
-    private void updateSnapshotWithDocument(DbConnectionRequest request, String collectionName, Document document) {
+    private void updateSnapshotWithDocument(DbConnectionRequest request, String collectionName, Document document, BsonDocument resumeToken) {
         MongoSchemaSnapshot snapshot = findSnapshot(request).orElse(null);
         if (snapshot == null || isBlank(snapshot.getSchemaJson())) {
             return;
@@ -307,6 +355,9 @@ public class MongoMetadataService {
         Object id = document.get("_id");
         if (id instanceof ObjectId objectId) {
             checkpoints.put(collectionName, objectId.toHexString());
+        }
+        if (resumeToken != null) {
+            snapshot.setResumeTokenJson(resumeToken.toJson());
         }
 
         if (changed) {
@@ -485,6 +536,8 @@ public class MongoMetadataService {
         snapshot.setCheckpointJson(writeJson(checkpoints));
         snapshot.setScannedDocs(scannedDocs);
         snapshot.setCompletedAt(OffsetDateTime.now());
+        snapshot.setCurrentCollection(null);
+        snapshot.setProcessedCollections(snapshot.getTotalCollections());
         snapshot.setErrorMessage(null);
         saveEntity(snapshot);
     }
@@ -513,6 +566,9 @@ public class MongoMetadataService {
         result.put("status", snapshot.getStatus());
         result.put("schemaHash", snapshot.getSchemaHash());
         result.put("scannedDocs", snapshot.getScannedDocs());
+        result.put("totalCollections", snapshot.getTotalCollections());
+        result.put("processedCollections", snapshot.getProcessedCollections());
+        result.put("currentCollection", snapshot.getCurrentCollection());
         result.put("startedAt", snapshot.getStartedAt());
         result.put("completedAt", snapshot.getCompletedAt());
         result.put("errorMessage", snapshot.getErrorMessage());
@@ -752,6 +808,17 @@ public class MongoMetadataService {
         return value == null || value.isBlank();
     }
 
+    private void updateScanProgress(MongoSchemaSnapshot snapshot, String collectionName, int processedCollections, int totalCollections, long scannedDocs) {
+        if (snapshot == null) {
+            return;
+        }
+        snapshot.setCurrentCollection(collectionName);
+        snapshot.setProcessedCollections(processedCollections);
+        snapshot.setTotalCollections(totalCollections);
+        snapshot.setScannedDocs(scannedDocs);
+        saveEntity(snapshot);
+    }
+
     private record MongoFindCommand(
             String collection,
             Document filter,
@@ -766,5 +833,10 @@ public class MongoMetadataService {
     }
 
     private record MongoSchemaScanResult(MetaPackDto metaPack, Map<String, String> checkpoints, long scannedDocs) {
+    }
+
+    @FunctionalInterface
+    private interface ScanProgressListener {
+        void onProgress(MongoSchemaSnapshot snapshot, String collectionName, int processedCollections, int totalCollections, long scannedDocs);
     }
 }

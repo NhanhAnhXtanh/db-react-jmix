@@ -3,6 +3,7 @@ package com.company.dbreactjmix.metadata.controller;
 import com.company.dbreactjmix.metadata.db.service.MetadataJdbcService;
 import com.company.dbreactjmix.metadata.db.service.ApiMetadataService;
 import com.company.dbreactjmix.metadata.db.service.ConnectionConfigService;
+import com.company.dbreactjmix.metadata.db.service.DbConnectionService;
 import com.company.dbreactjmix.metadata.db.service.MetaSetSnapshotService;
 import com.company.dbreactjmix.metadata.db.service.MongoMetadataService;
 import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
@@ -33,6 +34,7 @@ public class MetadataApiController {
     private final MetadataJdbcService metadataJdbcService;
     private final SqlBuilderService sqlBuilderService;
     private final ConnectionConfigService connectionConfigService;
+    private final DbConnectionService dbConnectionService;
     private final MetaSetSnapshotService metaSetSnapshotService;
     private final MongoMetadataService mongoMetadataService;
     private final ApiMetadataService apiMetadataService;
@@ -41,6 +43,7 @@ public class MetadataApiController {
             MetadataJdbcService metadataJdbcService,
             SqlBuilderService sqlBuilderService,
             ConnectionConfigService connectionConfigService,
+            DbConnectionService dbConnectionService,
             MetaSetSnapshotService metaSetSnapshotService,
             MongoMetadataService mongoMetadataService,
             ApiMetadataService apiMetadataService
@@ -48,6 +51,7 @@ public class MetadataApiController {
         this.metadataJdbcService = metadataJdbcService;
         this.sqlBuilderService = sqlBuilderService;
         this.connectionConfigService = connectionConfigService;
+        this.dbConnectionService = dbConnectionService;
         this.metaSetSnapshotService = metaSetSnapshotService;
         this.mongoMetadataService = mongoMetadataService;
         this.apiMetadataService = apiMetadataService;
@@ -179,5 +183,22 @@ public class MetadataApiController {
     @PostMapping("/connection")
     public Map<String, Object> saveConnection(@RequestBody DbConnectionRequest request) {
         return connectionConfigService.toResponse(connectionConfigService.save(request));
+    }
+
+    @PostMapping("/connection/test")
+    public Map<String, Object> testConnection(@RequestBody DbConnectionRequest request) throws Exception {
+        if (request.getDatabaseType() == DatabaseType.MONGODB) {
+            return mongoMetadataService.testConnection(request);
+        }
+        if (request.getDatabaseType() == DatabaseType.POSTGRES) {
+            try (java.sql.Connection connection = dbConnectionService.getConnection(request)) {
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("status", "ok");
+                response.put("database", connection.getCatalog());
+                response.put("product", connection.getMetaData().getDatabaseProductName());
+                return response;
+            }
+        }
+        throw new IllegalArgumentException("Connection test is not supported for this database type");
     }
 }

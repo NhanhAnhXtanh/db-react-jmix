@@ -38,13 +38,14 @@ public class DbConnectionService {
         if (request == null) {
             throw new IllegalArgumentException("Connection request is required");
         }
+        boolean mongoUri = request.getDatabaseType() == DatabaseType.MONGODB && isMongoUri(request.getHost());
         if (request.getDatabaseType() == null) {
             throw new IllegalArgumentException("databaseType is required and must be: POSTGRES, MONGODB or RESTAPI");
         }
         if (isBlank(request.getHost())) {
             throw new IllegalArgumentException("host is required");
         }
-        if (request.getDatabaseType() != DatabaseType.RESTAPI && isBlank(request.getPort())) {
+        if (request.getDatabaseType() != DatabaseType.RESTAPI && !mongoUri && isBlank(request.getPort())) {
             throw new IllegalArgumentException("port is required");
         }
         if (request.getDatabaseType() != DatabaseType.RESTAPI && isBlank(request.getDbName())) {
@@ -60,5 +61,9 @@ public class DbConnectionService {
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private boolean isMongoUri(String value) {
+        return value != null && (value.startsWith("mongodb://") || value.startsWith("mongodb+srv://"));
     }
 }

@@ -48,8 +48,21 @@ public class MongoSchemaSnapshot {
     @Column(name = "CHECKPOINT_JSON")
     private String checkpointJson;
 
+    @Lob
+    @Column(name = "RESUME_TOKEN_JSON")
+    private String resumeTokenJson;
+
     @Column(name = "SCANNED_DOCS")
     private Long scannedDocs;
+
+    @Column(name = "TOTAL_COLLECTIONS")
+    private Integer totalCollections;
+
+    @Column(name = "PROCESSED_COLLECTIONS")
+    private Integer processedCollections;
+
+    @Column(name = "CURRENT_COLLECTION", length = 255)
+    private String currentCollection;
 
     @Column(name = "ERROR_MESSAGE", length = 2000)
     private String errorMessage;
@@ -122,6 +135,38 @@ public class MongoSchemaSnapshot {
 
     public void setScannedDocs(Long scannedDocs) {
         this.scannedDocs = scannedDocs;
+    }
+
+    public String getResumeTokenJson() {
+        return resumeTokenJson;
+    }
+
+    public void setResumeTokenJson(String resumeTokenJson) {
+        this.resumeTokenJson = resumeTokenJson;
+    }
+
+    public Integer getTotalCollections() {
+        return totalCollections;
+    }
+
+    public void setTotalCollections(Integer totalCollections) {
+        this.totalCollections = totalCollections;
+    }
+
+    public Integer getProcessedCollections() {
+        return processedCollections;
+    }
+
+    public void setProcessedCollections(Integer processedCollections) {
+        this.processedCollections = processedCollections;
+    }
+
+    public String getCurrentCollection() {
+        return currentCollection;
+    }
+
+    public void setCurrentCollection(String currentCollection) {
+        this.currentCollection = currentCollection;
     }
 
     public String getErrorMessage() {
