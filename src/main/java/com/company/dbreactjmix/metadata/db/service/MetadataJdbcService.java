@@ -1,9 +1,9 @@
 package com.company.dbreactjmix.metadata.db.service;
 
 import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
-import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
 import com.company.dbreactjmix.metadata.dto.RelationItemDto;
+import com.company.dbreactjmix.metadata.dto.SchemaSnapshotDto;
 import com.company.dbreactjmix.metadata.enums.DatabaseType;
 import org.springframework.stereotype.Service;
 
@@ -84,7 +84,7 @@ public class MetadataJdbcService {
         }
     }
 
-    public MetaPackDto readDatabaseSchema(DbConnectionRequest request) {
+    public SchemaSnapshotDto readDatabaseSchema(DbConnectionRequest request) {
         String schema = resolveSchema(request);
         try (Connection connection = connectionService.getConnection(request)) {
             if (schema != null && !schema.isBlank()) {
@@ -112,14 +112,11 @@ public class MetadataJdbcService {
                 relations.addAll(loadRelationRows(metaData, schema, table));
             }
 
-            MetaPackDto.MetaPackContent content = new MetaPackDto.MetaPackContent();
-            content.setVersion("1.0");
-            content.setDataSource(mapDataSource(request.getDatabaseType()));
-            content.setSchema(schemaRows);
-            content.setRelations(relations);
-
-            MetaPackDto response = new MetaPackDto();
-            response.setMetaPack(content);
+            SchemaSnapshotDto response = new SchemaSnapshotDto();
+            response.setVersion("1.0");
+            response.setDataSource(mapDataSource(request.getDatabaseType()));
+            response.setSchema(schemaRows);
+            response.setRelations(relations);
             return response;
         } catch (SQLException e) {
             throw new IllegalStateException(
@@ -129,7 +126,7 @@ public class MetadataJdbcService {
         }
     }
 
-    public MetaPackDto buildMetaPack(DbConnectionRequest request) {
+    public SchemaSnapshotDto buildSchema(DbConnectionRequest request) {
         return readDatabaseSchema(request);
     }
 

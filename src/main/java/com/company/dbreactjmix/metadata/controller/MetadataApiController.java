@@ -4,15 +4,14 @@ import com.company.dbreactjmix.metadata.db.service.MetadataJdbcService;
 import com.company.dbreactjmix.metadata.db.service.ApiMetadataService;
 import com.company.dbreactjmix.metadata.db.service.ConnectionConfigService;
 import com.company.dbreactjmix.metadata.db.service.DbConnectionService;
-import com.company.dbreactjmix.metadata.db.service.MetaSetSnapshotService;
 import com.company.dbreactjmix.metadata.db.service.MetaSyncCommitService;
+import com.company.dbreactjmix.metadata.db.service.MetaSyncService;
 import com.company.dbreactjmix.metadata.db.service.MongoMetadataService;
 import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
-import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSyncCommitRequest;
 import com.company.dbreactjmix.metadata.dto.QueryBuildRequest;
 import com.company.dbreactjmix.metadata.dto.RawQueryRequest;
-import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
+import com.company.dbreactjmix.metadata.dto.SchemaSnapshotDto;
 import com.company.dbreactjmix.metadata.dto.SchemaDiffDto;
 import com.company.dbreactjmix.metadata.dto.SyncCheckRequest;
 import com.company.dbreactjmix.metadata.dto.SyncConfirmRequest;
@@ -38,7 +37,7 @@ public class MetadataApiController {
     private final SqlBuilderService sqlBuilderService;
     private final ConnectionConfigService connectionConfigService;
     private final DbConnectionService dbConnectionService;
-    private final MetaSetSnapshotService metaSetSnapshotService;
+    private final MetaSyncService metaSyncService;
     private final MongoMetadataService mongoMetadataService;
     private final ApiMetadataService apiMetadataService;
     private final MetaSyncCommitService metaSyncCommitService;
@@ -48,7 +47,7 @@ public class MetadataApiController {
             SqlBuilderService sqlBuilderService,
             ConnectionConfigService connectionConfigService,
             DbConnectionService dbConnectionService,
-            MetaSetSnapshotService metaSetSnapshotService,
+            MetaSyncService metaSyncService,
             MongoMetadataService mongoMetadataService,
             ApiMetadataService apiMetadataService,
             MetaSyncCommitService metaSyncCommitService
@@ -57,7 +56,7 @@ public class MetadataApiController {
         this.sqlBuilderService = sqlBuilderService;
         this.connectionConfigService = connectionConfigService;
         this.dbConnectionService = dbConnectionService;
-        this.metaSetSnapshotService = metaSetSnapshotService;
+        this.metaSyncService = metaSyncService;
         this.mongoMetadataService = mongoMetadataService;
         this.apiMetadataService = apiMetadataService;
         this.metaSyncCommitService = metaSyncCommitService;
@@ -102,15 +101,15 @@ public class MetadataApiController {
         return response;
     }
 
-    @PostMapping("/metapack")
-    public MetaPackDto buildMetaPack(@RequestBody DbConnectionRequest request) {
+    @PostMapping("/schema")
+    public SchemaSnapshotDto buildSchema(@RequestBody DbConnectionRequest request) {
         if (request.getDatabaseType() == DatabaseType.MONGODB) {
-            return mongoMetadataService.buildMetaPack(request);
+            return mongoMetadataService.buildSchema(request);
         }
         if (request.getDatabaseType() == DatabaseType.RESTAPI) {
-            return apiMetadataService.buildMetaPack(request);
+            return apiMetadataService.buildSchema(request);
         }
-        return metadataJdbcService.buildMetaPack(request);
+        return metadataJdbcService.buildSchema(request);
     }
 
     @PostMapping("/mongodb/schema/deep-scan")
@@ -129,53 +128,20 @@ public class MetadataApiController {
         return mongoMetadataService.getScanStatus(request);
     }
 
-    @PostMapping("/metapack/save")
-    public Map<String, Object> saveMetaPack(@RequestBody SaveMetaPackRequest request) {
-        return metaSetSnapshotService.saveSnapshot(request);
-    }
-
-    @GetMapping("/metapack/versions")
-    public List<Map<String, Object>> listMetaPackVersions(@RequestParam("metaSetCode") String metaSetCode) {
-        return metaSetSnapshotService.listVersions(metaSetCode);
-    }
-
-    @GetMapping("/metapack/version")
-    public Map<String, Object> getMetaPackVersion(
-            @RequestParam("metaSetCode") String metaSetCode,
-            @RequestParam("versionNo") Integer versionNo
-    ) {
-        return metaSetSnapshotService.getVersion(metaSetCode, versionNo);
-    }
-
-    @GetMapping("/metapack/list")
-    public List<Map<String, Object>> listMetaPacks() {
-        return metaSetSnapshotService.listMetaPacks();
-    }
-
-    @GetMapping("/metapack/{code}/latest-schema")
-    public MetaPackDto getLatestPackSchema(@PathVariable("code") String code) {
-        return metaSetSnapshotService.getLatestPackSchema(code);
-    }
-
-    @GetMapping("/metapack/{code}/versions")
-    public List<Map<String, Object>> listMetaPackVersionsByCode(@PathVariable("code") String code) {
-        return metaSetSnapshotService.listPackVersions(code);
-    }
-
     @GetMapping("/sync/latest")
     public List<Map<String, Object>> getLatestMetaSync(@RequestParam("packCode") String packCode) {
-        List<Map<String, Object>> data = metaSetSnapshotService.getLatestMetaSyncSchema(packCode);
+        List<Map<String, Object>> data = metaSyncService.getLatestMetaSyncSchema(packCode);
         return data != null ? data : List.of();
     }
 
     @PostMapping("/sync/preview")
     public SchemaDiffDto previewSync(@RequestBody SyncCheckRequest request) {
-        return metaSetSnapshotService.previewSync(request);
+        return metaSyncService.previewSync(request);
     }
 
     @PostMapping("/sync/accept")
     public Map<String, Object> acceptSync(@RequestBody SyncConfirmRequest request) {
-        return metaSetSnapshotService.acceptSync(request);
+        return metaSyncService.acceptSync(request);
     }
 
     @PostMapping("/metasync/commit")
@@ -225,12 +191,12 @@ public class MetadataApiController {
             }
         }
         if (request.getDatabaseType() == DatabaseType.RESTAPI) {
-            MetaPackDto metaPack = apiMetadataService.buildMetaPack(request);
+            SchemaSnapshotDto schemaSnapshot = apiMetadataService.buildSchema(request);
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", "ok");
             response.put("database", request.getDbName());
             response.put("product", "REST API");
-            response.put("endpoints", metaPack.getMetaPack().getSchema().stream()
+            response.put("endpoints", schemaSnapshot.getSchema().stream()
                     .filter(item -> item.getPath_parent() == null)
                     .count());
             return response;

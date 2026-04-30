@@ -1,8 +1,8 @@
 package com.company.dbreactjmix.metadata.db.service;
 
 import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
-import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
+import com.company.dbreactjmix.metadata.dto.SchemaSnapshotDto;
 import com.company.dbreactjmix.metadata.entity.MongoSchemaSnapshot;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -81,22 +81,22 @@ public class MongoMetadataService {
         this.systemAuthenticator = systemAuthenticator;
     }
 
-    public MetaPackDto buildMetaPack(DbConnectionRequest request) {
+    public SchemaSnapshotDto buildSchema(DbConnectionRequest request) {
         MongoSchemaSnapshot snapshot = findSnapshot(request).orElse(null);
         if (snapshot != null && !isBlank(snapshot.getSchemaJson())) {
-            MetaPackDto metaPack = readMetaPack(snapshot.getSchemaJson());
+            SchemaSnapshotDto schemaSnapshot = readSchemaSnapshot(snapshot.getSchemaJson());
             if (!"SCANNING".equals(snapshot.getStatus())) {
-                runIncrementalScan(request, snapshot, metaPack);
+                runIncrementalScan(request, snapshot, schemaSnapshot);
             }
             if ("FULL".equals(snapshot.getStatus())) {
                 startChangeStreamIfSupported(request);
             }
-            return metaPack;
+            return schemaSnapshot;
         }
 
         MongoSchemaScanResult sampled = scanSchema(request, false);
-        saveSnapshot(request, sampled.metaPack(), "PARTIAL", sampled.scannedDocs(), sampled.checkpoints());
-        return sampled.metaPack();
+        saveSnapshot(request, sampled.schemaSnapshot(), "PARTIAL", sampled.scannedDocs(), sampled.checkpoints());
+        return sampled.schemaSnapshot();
     }
 
     public Map<String, Object> testConnection(DbConnectionRequest request) {
@@ -141,7 +141,7 @@ public class MongoMetadataService {
         CompletableFuture.runAsync(() -> {
             try {
                 MongoSchemaScanResult full = scanSchema(request, true, this::updateScanProgress, snapshot);
-                saveSnapshot(request, full.metaPack(), "FULL", full.scannedDocs(), full.checkpoints());
+                saveSnapshot(request, full.schemaSnapshot(), "FULL", full.scannedDocs(), full.checkpoints());
                 startChangeStreamIfSupported(request);
             } catch (Exception e) {
                 try {
@@ -247,25 +247,22 @@ public class MongoMetadataService {
                 }
             }
 
-            MetaPackDto.MetaPackContent content = new MetaPackDto.MetaPackContent();
-            content.setVersion("1.0");
-            content.setDataSource("mongodb");
-            content.setSchema(schemaRows);
-            content.setRelations(List.of());
-
-            MetaPackDto response = new MetaPackDto();
-            response.setMetaPack(content);
+            SchemaSnapshotDto response = new SchemaSnapshotDto();
+            response.setVersion("1.0");
+            response.setDataSource("mongodb");
+            response.setSchema(schemaRows);
+            response.setRelations(List.of());
             return new MongoSchemaScanResult(response, checkpoints, scannedDocs);
         }
     }
 
-    private void runIncrementalScan(DbConnectionRequest request, MongoSchemaSnapshot snapshot, MetaPackDto metaPack) {
+    private void runIncrementalScan(DbConnectionRequest request, MongoSchemaSnapshot snapshot, SchemaSnapshotDto schemaSnapshot) {
         Map<String, String> checkpoints = readCheckpoints(snapshot.getCheckpointJson());
         if (checkpoints.isEmpty()) {
             return;
         }
 
-        Map<String, MetaSetModelDto> mergedRows = schemaMap(metaPack.getMetaPack().getSchema());
+        Map<String, MetaSetModelDto> mergedRows = schemaMap(schemaSnapshot.getSchema());
         Map<String, String> updatedCheckpoints = new LinkedHashMap<>(checkpoints);
         boolean changed = false;
 
@@ -301,8 +298,8 @@ public class MongoMetadataService {
         }
 
         if (changed) {
-            metaPack.getMetaPack().setSchema(new ArrayList<>(mergedRows.values()));
-            saveSnapshot(request, metaPack, snapshot.getStatus(), snapshot.getScannedDocs(), updatedCheckpoints);
+            schemaSnapshot.setSchema(new ArrayList<>(mergedRows.values()));
+            saveSnapshot(request, schemaSnapshot, snapshot.getStatus(), snapshot.getScannedDocs(), updatedCheckpoints);
         } else if (!updatedCheckpoints.equals(checkpoints)) {
             snapshot.setCheckpointJson(writeJson(updatedCheckpoints));
             saveEntity(snapshot);
@@ -342,8 +339,8 @@ public class MongoMetadataService {
             return;
         }
 
-        MetaPackDto metaPack = readMetaPack(snapshot.getSchemaJson());
-        Map<String, MetaSetModelDto> mergedRows = schemaMap(metaPack.getMetaPack().getSchema());
+        SchemaSnapshotDto schemaSnapshot = readSchemaSnapshot(snapshot.getSchemaJson());
+        Map<String, MetaSetModelDto> mergedRows = schemaMap(schemaSnapshot.getSchema());
         Map<String, MetaSetModelDto> documentRows = new LinkedHashMap<>();
         scanDocument(collectionName, document, documentRows);
 
@@ -365,9 +362,9 @@ public class MongoMetadataService {
         }
 
         if (changed) {
-            metaPack.getMetaPack().setSchema(new ArrayList<>(mergedRows.values()));
-            snapshot.setSchemaJson(writeJson(metaPack));
-            snapshot.setSchemaHash(hashSchema(metaPack.getMetaPack().getSchema()));
+            schemaSnapshot.setSchema(new ArrayList<>(mergedRows.values()));
+            snapshot.setSchemaJson(writeJson(schemaSnapshot));
+            snapshot.setSchemaHash(hashSchema(schemaSnapshot.getSchema()));
         }
         snapshot.setCheckpointJson(writeJson(checkpoints));
         saveEntity(snapshot);
@@ -531,12 +528,12 @@ public class MongoMetadataService {
         }
     }
 
-    private void saveSnapshot(DbConnectionRequest request, MetaPackDto metaPack, String status, Long scannedDocs, Map<String, String> checkpointsOverride) {
+    private void saveSnapshot(DbConnectionRequest request, SchemaSnapshotDto schemaSnapshot, String status, Long scannedDocs, Map<String, String> checkpointsOverride) {
         MongoSchemaSnapshot snapshot = findOrCreateSnapshot(request);
         Map<String, String> checkpoints = checkpointsOverride != null ? checkpointsOverride : new LinkedHashMap<>();
         snapshot.setStatus(status);
-        snapshot.setSchemaJson(writeJson(metaPack));
-        snapshot.setSchemaHash(hashSchema(metaPack.getMetaPack().getSchema()));
+        snapshot.setSchemaJson(writeJson(schemaSnapshot));
+        snapshot.setSchemaHash(hashSchema(schemaSnapshot.getSchema()));
         snapshot.setCheckpointJson(writeJson(checkpoints));
         snapshot.setScannedDocs(scannedDocs);
         snapshot.setCompletedAt(OffsetDateTime.now());
@@ -775,9 +772,9 @@ public class MongoMetadataService {
         return systemAuthenticator.withSystem(() -> dataManager.save(snapshot));
     }
 
-    private MetaPackDto readMetaPack(String json) {
+    private SchemaSnapshotDto readSchemaSnapshot(String json) {
         try {
-            return objectMapper.readValue(json, MetaPackDto.class);
+            return objectMapper.readValue(json, SchemaSnapshotDto.class);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Cannot read Mongo schema snapshot", e);
         }
@@ -851,7 +848,7 @@ public class MongoMetadataService {
     private record CollectionScanResult(List<MetaSetModelDto> rows, String lastObjectIdHex, long scannedDocs) {
     }
 
-    private record MongoSchemaScanResult(MetaPackDto metaPack, Map<String, String> checkpoints, long scannedDocs) {
+    private record MongoSchemaScanResult(SchemaSnapshotDto schemaSnapshot, Map<String, String> checkpoints, long scannedDocs) {
     }
 
     @FunctionalInterface

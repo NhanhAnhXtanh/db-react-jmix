@@ -1,8 +1,8 @@
 package com.company.dbreactjmix.metadata.db.service;
 
 import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
-import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
+import com.company.dbreactjmix.metadata.dto.SchemaSnapshotDto;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -31,7 +31,7 @@ public class ApiMetadataService {
                 .build();
     }
 
-    public MetaPackDto buildMetaPack(DbConnectionRequest request) {
+    public SchemaSnapshotDto buildSchema(DbConnectionRequest request) {
         JsonNode payload = fetchJson(request);
         String rootCode = !isBlank(request.getDbName()) ? request.getDbName() : "api";
         String endpoint = !isBlank(request.getSchema()) ? request.getSchema() : request.getHost();
@@ -41,14 +41,11 @@ public class ApiMetadataService {
         JsonNode sample = payload.isArray() && !payload.isEmpty() ? payload.get(0) : payload;
         walkValue(rootCode, rootCode, sample, schemaRows);
 
-        MetaPackDto.MetaPackContent content = new MetaPackDto.MetaPackContent();
-        content.setVersion("1.0");
-        content.setDataSource("restapi");
-        content.setSchema(schemaRows);
-        content.setRelations(List.of());
-
-        MetaPackDto response = new MetaPackDto();
-        response.setMetaPack(content);
+        SchemaSnapshotDto response = new SchemaSnapshotDto();
+        response.setVersion("1.0");
+        response.setDataSource("restapi");
+        response.setSchema(schemaRows);
+        response.setRelations(List.of());
         return response;
     }
 

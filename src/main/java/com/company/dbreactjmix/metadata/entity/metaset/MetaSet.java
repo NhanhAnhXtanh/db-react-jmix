@@ -1,6 +1,5 @@
 package com.company.dbreactjmix.metadata.entity.metaset;
 
-import com.company.dbreactjmix.metadata.entity.metapack.MetaPack;
 import io.jmix.core.annotation.DeletedBy;
 import io.jmix.core.annotation.DeletedDate;
 import io.jmix.core.entity.annotation.JmixGeneratedValue;
@@ -43,10 +42,6 @@ public class MetaSet {
     @Column(name = "CURRENT_HASH_DATA")
     private String currentHashData;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "META_PACK_ID")
-    private MetaPack metaPack;
-
     @Column(name = "VERSION", nullable = false)
     @Version
     private Integer version;
@@ -74,14 +69,6 @@ public class MetaSet {
     @DeletedDate
     @Column(name = "DELETED_DATE")
     private OffsetDateTime deletedDate;
-
-    public MetaPack getMetaPack() {
-        return metaPack;
-    }
-
-    public void setMetaPack(MetaPack metaPack) {
-        this.metaPack = metaPack;
-    }
 
     public String getDescription() {
         return description;

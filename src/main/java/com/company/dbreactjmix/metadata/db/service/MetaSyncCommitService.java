@@ -1,8 +1,8 @@
 package com.company.dbreactjmix.metadata.db.service;
 
-import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
 import com.company.dbreactjmix.metadata.dto.MetaSyncCommitRequest;
+import com.company.dbreactjmix.metadata.dto.SchemaSnapshotDto;
 import com.company.dbreactjmix.metadata.entity.MetadataConnectionConfig;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSet;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSync;
@@ -59,9 +59,8 @@ public class MetaSyncCommitService {
             throw new IllegalArgumentException("commitMessage is required");
         }
 
-        MetaPackDto metaPackDto = metadataJdbcService.readDatabaseSchema(request.getConnection());
-        MetaPackDto.MetaPackContent content = metaPackDto.getMetaPack();
-        List<MetaSetModelDto> allSchema = content.getSchema() != null ? content.getSchema() : List.of();
+        SchemaSnapshotDto schemaSnapshot = metadataJdbcService.readDatabaseSchema(request.getConnection());
+        List<MetaSetModelDto> allSchema = schemaSnapshot.getSchema() != null ? schemaSnapshot.getSchema() : List.of();
         List<MetaSetModelDto> tables = allSchema.stream()
                 .filter(field -> field.getPath_parent() == null)
                 .collect(Collectors.toList());

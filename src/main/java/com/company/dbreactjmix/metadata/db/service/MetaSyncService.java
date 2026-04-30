@@ -1,7 +1,7 @@
 package com.company.dbreactjmix.metadata.db.service;
 
-import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
+import com.company.dbreactjmix.metadata.dto.SchemaSnapshotDto;
 import com.company.dbreactjmix.metadata.dto.SchemaDiffDto;
 import com.company.dbreactjmix.metadata.dto.SyncCheckRequest;
 import com.company.dbreactjmix.metadata.dto.SyncConfirmRequest;
@@ -45,9 +45,8 @@ public class MetaSyncService {
     }
 
     public SchemaDiffDto previewSync(SyncCheckRequest request) {
-        MetaPackDto currentPack = metadataJdbcService.readDatabaseSchema(request.getConnection());
-        MetaPackDto.MetaPackContent content = currentPack.getMetaPack();
-        List<MetaSetModelDto> allSchema = content.getSchema() != null ? content.getSchema() : List.of();
+        SchemaSnapshotDto currentPack = metadataJdbcService.readDatabaseSchema(request.getConnection());
+        List<MetaSetModelDto> allSchema = currentPack.getSchema() != null ? currentPack.getSchema() : List.of();
 
         List<MetaSetModelDto> currentTables = allSchema.stream()
                 .filter(field -> field.getPath_parent() == null)
@@ -119,9 +118,8 @@ public class MetaSyncService {
     }
 
     public Map<String, Object> acceptSync(SyncConfirmRequest request) {
-        MetaPackDto metaPackDto = metadataJdbcService.readDatabaseSchema(request.getConnection());
-        MetaPackDto.MetaPackContent content = metaPackDto.getMetaPack();
-        List<MetaSetModelDto> allSchema = content.getSchema() != null ? content.getSchema() : List.of();
+        SchemaSnapshotDto schemaSnapshot = metadataJdbcService.readDatabaseSchema(request.getConnection());
+        List<MetaSetModelDto> allSchema = schemaSnapshot.getSchema() != null ? schemaSnapshot.getSchema() : List.of();
         List<MetaSetModelDto> tables = allSchema.stream()
                 .filter(field -> field.getPath_parent() == null)
                 .collect(Collectors.toList());

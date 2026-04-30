@@ -1,6 +1,5 @@
 package com.company.dbreactjmix.metadata.db.service;
 
-import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -45,58 +44,6 @@ public class MetaSnapshotCodec {
             return sha256(objectMapper.writeValueAsString(structural));
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Cannot compute columns hash", e);
-        }
-    }
-
-    public String toPackHash(MetaPackDto.MetaPackContent content) {
-        List<MetaSetModelDto> schema = content.getSchema() != null ? content.getSchema() : List.of();
-        List<Map<String, Object>> structural = schema.stream()
-                .filter(field -> field.getPath_parent() != null)
-                .<Map<String, Object>>map(this::toStructuralEntry)
-                .sorted(Comparator.comparing(m -> String.valueOf(m.get("code"))))
-                .collect(Collectors.toList());
-        try {
-            return sha256(objectMapper.writeValueAsString(structural));
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Cannot compute pack hash", e);
-        }
-    }
-
-    public String toPackFieldData(
-            int versionNo,
-            MetaPackDto.MetaPackContent content,
-            List<MetaSetModelDto> tables,
-            Map<String, List<MetaSetModelDto>> columnsByTable
-    ) {
-        List<Map<String, Object>> tableList = tables.stream().map(table -> {
-            List<MetaSetModelDto> columns = columnsByTable.getOrDefault(table.getCode(), List.of());
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("table", table.getCode());
-            item.put("metasetdata", toStoredColumnEntries(columns));
-            return item;
-        }).collect(Collectors.toList());
-
-        Map<String, Object> wrapper = new LinkedHashMap<>();
-        wrapper.put("versionNo", versionNo);
-        wrapper.put("dataSource", content.getDataSource());
-        wrapper.put("tables", tableList);
-        wrapper.put("relations", content.getRelations());
-        try {
-            return storageMapper.writeValueAsString(wrapper);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Cannot serialize pack field data", e);
-        }
-    }
-
-    public String toTableFieldData(String tableCode, int versionNo, List<MetaSetModelDto> columns) {
-        Map<String, Object> wrapper = new LinkedHashMap<>();
-        wrapper.put("table", tableCode);
-        wrapper.put("versionNo", versionNo);
-        wrapper.put("metasetdata", toStoredColumnEntries(columns));
-        try {
-            return storageMapper.writeValueAsString(wrapper);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Cannot serialize table field data", e);
         }
     }
 
