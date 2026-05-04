@@ -107,13 +107,16 @@ public class MetaSyncCommitService {
             List<Map<String, Object>> result = new ArrayList<>();
             for (Map.Entry<String, MetaSyncCommit> entry : latestByPack.entrySet()) {
                 MetaSyncCommit commit = entry.getValue();
-                int tableCount = loadLatestActiveByPackCode(commit.getPackCode()).size();
+                Long tableCount = dataManager.loadValue(
+                        "select count(e) from MetaSet e where e.code like :prefix",
+                        Long.class
+                ).parameter("prefix", commit.getPackCode() + "-%").optional().orElse(0L);
                 Map<String, Object> item = new LinkedHashMap<>();
                 item.put("packCode", commit.getPackCode());
                 item.put("latestVersionNo", commit.getVersionNo());
                 item.put("latestCommitMessage", commit.getCommitMessage());
                 item.put("latestCommitDate", formatDate(commit.getCreatedDate()));
-                item.put("tableCount", tableCount);
+                item.put("tableCount", tableCount != null ? tableCount.intValue() : 0);
                 result.add(item);
             }
             return result;
