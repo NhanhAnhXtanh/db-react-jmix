@@ -1,5 +1,6 @@
 package com.company.dbreactjmix.metadata.db.service;
 
+import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
 import com.company.dbreactjmix.metadata.entity.metapack.MetaPack;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSet;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSetVersion;
@@ -222,24 +223,24 @@ public class MetaSetManagerService {
 
     public Map<String, Object> compareVersions(String metaSetCode, Integer fromVer, Integer toVer) {
         return systemAuthenticator.withSystem(() -> {
-            List<com.company.dbreactjmix.metadata.dto.MetaSetModelDto> fromFields = loadVersionFields(metaSetCode, fromVer);
-            List<com.company.dbreactjmix.metadata.dto.MetaSetModelDto> toFields = loadVersionFields(metaSetCode, toVer);
+            List<MetaSetModelDto> fromFields = loadVersionFields(metaSetCode, fromVer);
+            List<MetaSetModelDto> toFields = loadVersionFields(metaSetCode, toVer);
 
-            Map<String, com.company.dbreactjmix.metadata.dto.MetaSetModelDto> fromMap = new java.util.LinkedHashMap<>();
-            for (com.company.dbreactjmix.metadata.dto.MetaSetModelDto f : fromFields) fromMap.put(f.getCode(), f);
-            Map<String, com.company.dbreactjmix.metadata.dto.MetaSetModelDto> toMap = new java.util.LinkedHashMap<>();
-            for (com.company.dbreactjmix.metadata.dto.MetaSetModelDto f : toFields) toMap.put(f.getCode(), f);
+            Map<String, MetaSetModelDto> fromMap = new LinkedHashMap<>();
+            for (MetaSetModelDto f : fromFields) fromMap.put(f.getCode(), f);
+            Map<String, MetaSetModelDto> toMap = new LinkedHashMap<>();
+            for (MetaSetModelDto f : toFields) toMap.put(f.getCode(), f);
 
             List<Map<String, Object>> added = new ArrayList<>();
             List<Map<String, Object>> removed = new ArrayList<>();
             List<Map<String, Object>> changed = new ArrayList<>();
 
-            for (Map.Entry<String, com.company.dbreactjmix.metadata.dto.MetaSetModelDto> e : toMap.entrySet()) {
+            for (Map.Entry<String, MetaSetModelDto> e : toMap.entrySet()) {
                 if (!fromMap.containsKey(e.getKey())) {
                     added.add(fieldToMap(e.getValue()));
                 } else {
-                    com.company.dbreactjmix.metadata.dto.MetaSetModelDto before = fromMap.get(e.getKey());
-                    com.company.dbreactjmix.metadata.dto.MetaSetModelDto after = e.getValue();
+                    MetaSetModelDto before = fromMap.get(e.getKey());
+                    MetaSetModelDto after = e.getValue();
                     if (!java.util.Objects.equals(before.getDataType(), after.getDataType())
                             || before.isNull() != after.isNull()
                             || before.isPrimaryKey() != after.isPrimaryKey()
@@ -252,7 +253,7 @@ public class MetaSetManagerService {
                     }
                 }
             }
-            for (Map.Entry<String, com.company.dbreactjmix.metadata.dto.MetaSetModelDto> e : fromMap.entrySet()) {
+            for (Map.Entry<String, MetaSetModelDto> e : fromMap.entrySet()) {
                 if (!toMap.containsKey(e.getKey())) removed.add(fieldToMap(e.getValue()));
             }
 
@@ -266,17 +267,17 @@ public class MetaSetManagerService {
         });
     }
 
-    private List<com.company.dbreactjmix.metadata.dto.MetaSetModelDto> loadVersionFields(String code, Integer versionNo) {
-        MetaSetVersion v = dataManager.load(MetaSetVersion.class)
-                .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :ver")
+    private List<MetaSetModelDto> loadVersionFields(String code, Integer versionNo) {
+        MetaSetVersion ver = dataManager.load(MetaSetVersion.class)
+                .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :vno")
                 .parameter("code", code)
-                .parameter("ver", versionNo)
+                .parameter("vno", versionNo)
                 .optional().orElse(null);
-        if (v == null || v.getFieldData() == null) return List.of();
-        return codec.fromCanonicalJson(v.getFieldData());
+        if (ver == null || ver.getFieldData() == null) return List.of();
+        return codec.fromCanonicalJson(ver.getFieldData());
     }
 
-    private Map<String, Object> fieldToMap(com.company.dbreactjmix.metadata.dto.MetaSetModelDto f) {
+    private Map<String, Object> fieldToMap(MetaSetModelDto f) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("code", f.getCode());
         m.put("name", f.getName());
