@@ -3,6 +3,7 @@ package com.company.dbreactjmix.metadata.db.service;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSetModelDto;
 import com.company.dbreactjmix.metadata.dto.MetaSyncCommitRequest;
+import com.company.dbreactjmix.metadata.dto.MetaSyncPollRequest;
 import com.company.dbreactjmix.metadata.entity.MetadataConnectionConfig;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSet;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSync;
@@ -90,6 +91,120 @@ public class MetaSyncCommitService {
                 columnsByTable,
                 finalConnectionConfig
         ));
+    }
+
+    public List<Map<String, Object>> listPacks() {
+        return systemAuthenticator.withSystem(() -> {
+            List<MetaSyncCommit> all = dataManager.load(MetaSyncCommit.class)
+                    .query("select e from MetaSyncCommit e order by e.packCode asc, e.versionNo desc")
+                    .list();
+
+            Map<String, MetaSyncCommit> latestByPack = new LinkedHashMap<>();
+            for (MetaSyncCommit c : all) {
+                latestByPack.putIfAbsent(c.getPackCode(), c);
+            }
+
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (Map.Entry<String, MetaSyncCommit> entry : latestByPack.entrySet()) {
+                MetaSyncCommit commit = entry.getValue();
+                int tableCount = loadLatestActiveByPackCode(commit.getPackCode()).size();
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("packCode", commit.getPackCode());
+                item.put("latestVersionNo", commit.getVersionNo());
+                item.put("latestCommitMessage", commit.getCommitMessage());
+                item.put("latestCommitDate", formatDate(commit.getCreatedDate()));
+                item.put("tableCount", tableCount);
+                result.add(item);
+            }
+            return result;
+        });
+    }
+
+    public Map<String, Object> previewRich(MetaSyncPollRequest request) {
+        if (request.getPackCode() == null || request.getPackCode().isBlank()) {
+            throw new IllegalArgumentException("packCode is required");
+        }
+        if (request.getConnection() == null) {
+            throw new IllegalArgumentException("connection is required");
+        }
+
+        MetaPackDto metaPackDto = readLiveSchema(request.getConnection());
+        MetaPackDto.MetaPackContent content = metaPackDto.getMetaPack();
+        List<MetaSetModelDto> allSchema = content.getSchema() != null ? content.getSchema() : List.of();
+
+        List<MetaSetModelDto> tables = allSchema.stream()
+                .filter(f -> f.getPath_parent() == null)
+                .collect(Collectors.toList());
+        Map<String, List<MetaSetModelDto>> columnsByTable = allSchema.stream()
+                .filter(f -> f.getPath_parent() != null)
+                .collect(Collectors.groupingBy(MetaSetModelDto::getPath_parent));
+
+        return systemAuthenticator.withSystem(() -> {
+            Map<String, MetaSync> latestActiveByTable = loadLatestActiveByPackCode(request.getPackCode());
+            Map<String, List<MetaSetModelDto>> previousColumnsByTable = new LinkedHashMap<>();
+            for (Map.Entry<String, MetaSync> entry : latestActiveByTable.entrySet()) {
+                previousColumnsByTable.put(entry.getKey(), readColumnsFromMetaSync(entry.getValue()));
+            }
+
+            List<Map<String, Object>> tableDiffs = new ArrayList<>();
+            boolean hasChanges = false;
+            Map<String, MetaSetModelDto> currentTableMap = new LinkedHashMap<>();
+
+            for (MetaSetModelDto table : tables) {
+                currentTableMap.put(table.getCode(), table);
+                List<MetaSetModelDto> currentColumns = columnsByTable.getOrDefault(table.getCode(), List.of());
+                List<MetaSetModelDto> prevColumns = previousColumnsByTable.get(table.getCode());
+
+                if (prevColumns == null) {
+                    hasChanges = true;
+                    Map<String, Object> diff = new LinkedHashMap<>();
+                    diff.put("tableCode", table.getCode());
+                    diff.put("tableName", table.getName());
+                    diff.put("status", "added");
+                    diff.put("metaSyncColumns", List.of());
+                    diff.put("liveColumns", currentColumns.stream().map(this::columnAsMap).collect(Collectors.toList()));
+                    diff.put("addedColumns", currentColumns.stream().map(this::columnAsMap).collect(Collectors.toList()));
+                    diff.put("removedColumns", List.of());
+                    diff.put("modifiedColumns", List.of());
+                    tableDiffs.add(diff);
+                } else {
+                    MetaSync latestSync = latestActiveByTable.get(table.getCode());
+                    String prevHash = latestSync != null ? latestSync.getHashData() : null;
+                    String currHash = codec.toColumnsHash(currentColumns);
+                    if (!Objects.equals(prevHash, currHash)) {
+                        hasChanges = true;
+                        Map<String, Object> diff = buildModifiedTableDiff(
+                                table.getCode(), table.getName(), prevColumns, currentColumns);
+                        diff.put("status", "modified");
+                        diff.put("metaSyncColumns", prevColumns.stream().map(this::columnAsMap).collect(Collectors.toList()));
+                        diff.put("liveColumns", currentColumns.stream().map(this::columnAsMap).collect(Collectors.toList()));
+                        tableDiffs.add(diff);
+                    }
+                }
+            }
+
+            for (Map.Entry<String, List<MetaSetModelDto>> entry : previousColumnsByTable.entrySet()) {
+                if (!currentTableMap.containsKey(entry.getKey())) {
+                    hasChanges = true;
+                    List<MetaSetModelDto> prevCols = entry.getValue();
+                    Map<String, Object> diff = new LinkedHashMap<>();
+                    diff.put("tableCode", entry.getKey());
+                    diff.put("tableName", entry.getKey());
+                    diff.put("status", "removed");
+                    diff.put("metaSyncColumns", prevCols.stream().map(this::columnAsMap).collect(Collectors.toList()));
+                    diff.put("liveColumns", List.of());
+                    diff.put("addedColumns", List.of());
+                    diff.put("removedColumns", prevCols.stream().map(this::columnAsMap).collect(Collectors.toList()));
+                    diff.put("modifiedColumns", List.of());
+                    tableDiffs.add(diff);
+                }
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("hasChanges", hasChanges);
+            result.put("tables", tableDiffs);
+            return result;
+        });
     }
 
     public List<Map<String, Object>> listCommits(String packCode) {

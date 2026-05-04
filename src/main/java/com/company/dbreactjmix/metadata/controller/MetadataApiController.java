@@ -10,6 +10,7 @@ import com.company.dbreactjmix.metadata.db.service.MongoMetadataService;
 import com.company.dbreactjmix.metadata.dto.DbConnectionRequest;
 import com.company.dbreactjmix.metadata.dto.MetaPackDto;
 import com.company.dbreactjmix.metadata.dto.MetaSyncCommitRequest;
+import com.company.dbreactjmix.metadata.dto.MetaSyncPollRequest;
 import com.company.dbreactjmix.metadata.dto.QueryBuildRequest;
 import com.company.dbreactjmix.metadata.dto.RawQueryRequest;
 import com.company.dbreactjmix.metadata.dto.SaveMetaPackRequest;
@@ -181,6 +182,16 @@ public class MetadataApiController {
     @PostMapping("/metasync/commit")
     public Map<String, Object> commitMetaSync(@RequestBody MetaSyncCommitRequest request) {
         return metaSyncCommitService.commit(request);
+    }
+
+    @GetMapping("/metasync/packs")
+    public List<Map<String, Object>> listMetaSyncPacks() {
+        return metaSyncCommitService.listPacks();
+    }
+
+    @PostMapping("/metasync/poll")
+    public Map<String, Object> pollMetaSync(@RequestBody MetaSyncPollRequest request) {
+        return metaSyncCommitService.previewRich(request);
     }
 
     @GetMapping("/metasync/{packCode}/commits")
