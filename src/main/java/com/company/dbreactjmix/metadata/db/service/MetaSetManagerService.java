@@ -85,11 +85,28 @@ public class MetaSetManagerService {
         });
     }
 
+    private MetaSet findMetaSet(String code) {
+        return dataManager.load(MetaSet.class)
+                .query("e.code = :code")
+                .parameter("code", code)
+                .optional().orElse(null);
+    }
+
+    private MetaSetVersion findMetaSetVersion(MetaSet metaSet, Integer versionNo) {
+        return dataManager.load(MetaSetVersion.class)
+                .query("e.metaSet = :ms and e.versionNo = :vno")
+                .parameter("ms", metaSet)
+                .parameter("vno", versionNo)
+                .optional().orElse(null);
+    }
+
     public List<Map<String, Object>> listVersions(String metaSetCode) {
         return systemAuthenticator.withSystem(() -> {
+            MetaSet ms = findMetaSet(metaSetCode);
+            if (ms == null) return List.of();
             List<MetaSetVersion> versions = dataManager.load(MetaSetVersion.class)
-                    .query("select v from MetaSetVersion v where v.metaSet.code = :code order by v.versionNo desc")
-                    .parameter("code", metaSetCode)
+                    .query("e.metaSet = :ms order by e.versionNo desc")
+                    .parameter("ms", ms)
                     .list();
 
             List<Map<String, Object>> result = new ArrayList<>();
@@ -108,18 +125,17 @@ public class MetaSetManagerService {
 
     public List<Map<String, Object>> getLatestFields(String metaSetCode) {
         return systemAuthenticator.withSystem(() -> {
+            MetaSet ms = findMetaSet(metaSetCode);
+            if (ms == null) return List.of();
+
             Integer maxVer = dataManager.loadValue(
-                    "select max(v.versionNo) from MetaSetVersion v where v.metaSet.code = :code",
+                    "select max(e.versionNo) from MetaSetVersion e where e.metaSet = :ms",
                     Integer.class
-            ).parameter("code", metaSetCode).optional().orElse(null);
+            ).parameter("ms", ms).optional().orElse(null);
 
             if (maxVer == null) return List.of();
 
-            MetaSetVersion latest = dataManager.load(MetaSetVersion.class)
-                    .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :ver")
-                    .parameter("code", metaSetCode)
-                    .parameter("ver", maxVer)
-                    .optional().orElse(null);
+            MetaSetVersion latest = findMetaSetVersion(ms, maxVer);
 
             if (latest == null || latest.getFieldData() == null) return List.of();
 
@@ -172,11 +188,9 @@ public class MetaSetManagerService {
 
     public List<Map<String, Object>> getVersionFields(String metaSetCode, Integer versionNo) {
         return systemAuthenticator.withSystem(() -> {
-            MetaSetVersion version = dataManager.load(MetaSetVersion.class)
-                    .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :ver")
-                    .parameter("code", metaSetCode)
-                    .parameter("ver", versionNo)
-                    .optional().orElse(null);
+            MetaSet ms = findMetaSet(metaSetCode);
+            if (ms == null) return List.of();
+            MetaSetVersion version = findMetaSetVersion(ms, versionNo);
 
             if (version == null || version.getFieldData() == null) return List.of();
 
@@ -197,18 +211,11 @@ public class MetaSetManagerService {
 
     public Map<String, Object> setCurrentVersion(String metaSetCode, Integer versionNo) {
         return systemAuthenticator.withSystem(() -> {
-            MetaSet ms = dataManager.load(MetaSet.class)
-                    .query("e.code = :code")
-                    .parameter("code", metaSetCode)
-                    .optional()
-                    .orElseThrow(() -> new IllegalArgumentException("MetaSet not found: " + metaSetCode));
+            MetaSet ms = findMetaSet(metaSetCode);
+            if (ms == null) throw new IllegalArgumentException("MetaSet not found: " + metaSetCode);
 
-            MetaSetVersion version = dataManager.load(MetaSetVersion.class)
-                    .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :ver")
-                    .parameter("code", metaSetCode)
-                    .parameter("ver", versionNo)
-                    .optional()
-                    .orElseThrow(() -> new IllegalArgumentException("Version not found: " + versionNo));
+            MetaSetVersion version = findMetaSetVersion(ms, versionNo);
+            if (version == null) throw new IllegalArgumentException("Version not found: " + versionNo);
 
             ms.setCurrentVersionNo(versionNo);
             ms.setCurrentHashData(version.getHashData());
@@ -268,11 +275,9 @@ public class MetaSetManagerService {
     }
 
     private List<MetaSetModelDto> loadVersionFields(String code, Integer versionNo) {
-        MetaSetVersion ver = dataManager.load(MetaSetVersion.class)
-                .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :vno")
-                .parameter("code", code)
-                .parameter("vno", versionNo)
-                .optional().orElse(null);
+        MetaSet ms = findMetaSet(code);
+        if (ms == null) return List.of();
+        MetaSetVersion ver = findMetaSetVersion(ms, versionNo);
         if (ver == null || ver.getFieldData() == null) return List.of();
         return codec.fromCanonicalJson(ver.getFieldData());
     }
@@ -289,20 +294,17 @@ public class MetaSetManagerService {
     }
 
     private int countFieldsFromLatestVersion(String metaSetCode) {
+        MetaSet ms = findMetaSet(metaSetCode);
+        if (ms == null) return 0;
+
         Integer maxVer = dataManager.loadValue(
-                "select max(v.versionNo) from MetaSetVersion v where v.metaSet.code = :code",
+                "select max(e.versionNo) from MetaSetVersion e where e.metaSet = :ms",
                 Integer.class
-        ).parameter("code", metaSetCode).optional().orElse(null);
+        ).parameter("ms", ms).optional().orElse(null);
 
         if (maxVer == null) return 0;
 
-        MetaSetVersion latest = dataManager.load(MetaSetVersion.class)
-                .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :ver")
-                .parameter("code", metaSetCode)
-                .parameter("ver", maxVer)
-                .optional()
-                .orElse(null);
-
+        MetaSetVersion latest = findMetaSetVersion(ms, maxVer);
         return latest != null ? countFieldsFromFieldData(latest.getFieldData()) : 0;
     }
 
