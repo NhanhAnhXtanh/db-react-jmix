@@ -1,5 +1,6 @@
 package com.company.dbreactjmix.metadata.db.service;
 
+import com.company.dbreactjmix.metadata.entity.metapack.MetaPack;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSet;
 import com.company.dbreactjmix.metadata.entity.metaset.MetaSetVersion;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -55,9 +56,16 @@ public class MetaSetManagerService {
 
     public List<Map<String, Object>> listTablesByPack(String packCode) {
         return systemAuthenticator.withSystem(() -> {
+            MetaPack pack = dataManager.load(MetaPack.class)
+                    .query("e.code = :code")
+                    .parameter("code", packCode)
+                    .optional().orElse(null);
+
+            if (pack == null) return List.of();
+
             List<MetaSet> metaSets = dataManager.load(MetaSet.class)
-                    .query("e.metaPack.code = :packCode order by e.code asc")
-                    .parameter("packCode", packCode)
+                    .query("e.metaPack = :pack order by e.code asc")
+                    .parameter("pack", pack)
                     .list();
 
             List<Map<String, Object>> result = new ArrayList<>();
