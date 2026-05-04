@@ -258,6 +258,9 @@
                                  referencedTableName="META_SET"/>
     </changeSet>
     <changeSet id="19" author="db-react-jmix">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="META_SYNC" columnName="IS_DELETED"/></not>
+        </preConditions>
         <addColumn tableName="META_SYNC">
             <column name="IS_DELETED" type="BOOLEAN" defaultValueBoolean="false">
                 <constraints nullable="false"/>
@@ -265,6 +268,9 @@
         </addColumn>
     </changeSet>
     <changeSet id="20" author="db-react-jmix">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="META_SYNC_COMMIT"/></not>
+        </preConditions>
         <createTable tableName="META_SYNC_COMMIT">
             <column name="ID" type="UUID">
                 <constraints nullable="false" primaryKey="true" primaryKeyName="PK_META_SYNC_COMMIT"/>
@@ -292,11 +298,17 @@
         </createTable>
     </changeSet>
     <changeSet id="21" author="db-react-jmix">
+        <preConditions onFail="MARK_RAN">
+            <not><indexExists indexName="IDX_META_SYNC_COMMIT_PACK"/></not>
+        </preConditions>
         <createIndex indexName="IDX_META_SYNC_COMMIT_PACK" tableName="META_SYNC_COMMIT">
             <column name="PACK_CODE"/>
         </createIndex>
     </changeSet>
     <changeSet id="22" author="db-react-jmix">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="META_SET" columnName="STATUS"/></not>
+        </preConditions>
         <addColumn tableName="META_SET">
             <column name="STATUS" type="VARCHAR(50)"/>
             <column name="OPERATION" type="VARCHAR(500)"/>
