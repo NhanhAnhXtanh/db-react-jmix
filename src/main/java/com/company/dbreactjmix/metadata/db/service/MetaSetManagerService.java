@@ -169,6 +169,124 @@ public class MetaSetManagerService {
         });
     }
 
+    public List<Map<String, Object>> getVersionFields(String metaSetCode, Integer versionNo) {
+        return systemAuthenticator.withSystem(() -> {
+            MetaSetVersion version = dataManager.load(MetaSetVersion.class)
+                    .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :ver")
+                    .parameter("code", metaSetCode)
+                    .parameter("ver", versionNo)
+                    .optional().orElse(null);
+
+            if (version == null || version.getFieldData() == null) return List.of();
+
+            return codec.fromCanonicalJson(version.getFieldData()).stream()
+                    .map(f -> {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("code", f.getCode());
+                        row.put("name", f.getName());
+                        row.put("dataType", f.getDataType());
+                        row.put("isPrimaryKey", f.isPrimaryKey());
+                        row.put("isNull", f.isNull());
+                        row.put("description", f.getDescription());
+                        return row;
+                    })
+                    .collect(java.util.stream.Collectors.toList());
+        });
+    }
+
+    public Map<String, Object> setCurrentVersion(String metaSetCode, Integer versionNo) {
+        return systemAuthenticator.withSystem(() -> {
+            MetaSet ms = dataManager.load(MetaSet.class)
+                    .query("e.code = :code")
+                    .parameter("code", metaSetCode)
+                    .optional()
+                    .orElseThrow(() -> new IllegalArgumentException("MetaSet not found: " + metaSetCode));
+
+            MetaSetVersion version = dataManager.load(MetaSetVersion.class)
+                    .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :ver")
+                    .parameter("code", metaSetCode)
+                    .parameter("ver", versionNo)
+                    .optional()
+                    .orElseThrow(() -> new IllegalArgumentException("Version not found: " + versionNo));
+
+            ms.setCurrentVersionNo(versionNo);
+            ms.setCurrentHashData(version.getHashData());
+            dataManager.save(ms);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("code", metaSetCode);
+            result.put("currentVersionNo", versionNo);
+            return result;
+        });
+    }
+
+    public Map<String, Object> compareVersions(String metaSetCode, Integer fromVer, Integer toVer) {
+        return systemAuthenticator.withSystem(() -> {
+            List<com.company.dbreactjmix.metadata.dto.MetaSetModelDto> fromFields = loadVersionFields(metaSetCode, fromVer);
+            List<com.company.dbreactjmix.metadata.dto.MetaSetModelDto> toFields = loadVersionFields(metaSetCode, toVer);
+
+            Map<String, com.company.dbreactjmix.metadata.dto.MetaSetModelDto> fromMap = new java.util.LinkedHashMap<>();
+            for (com.company.dbreactjmix.metadata.dto.MetaSetModelDto f : fromFields) fromMap.put(f.getCode(), f);
+            Map<String, com.company.dbreactjmix.metadata.dto.MetaSetModelDto> toMap = new java.util.LinkedHashMap<>();
+            for (com.company.dbreactjmix.metadata.dto.MetaSetModelDto f : toFields) toMap.put(f.getCode(), f);
+
+            List<Map<String, Object>> added = new ArrayList<>();
+            List<Map<String, Object>> removed = new ArrayList<>();
+            List<Map<String, Object>> changed = new ArrayList<>();
+
+            for (Map.Entry<String, com.company.dbreactjmix.metadata.dto.MetaSetModelDto> e : toMap.entrySet()) {
+                if (!fromMap.containsKey(e.getKey())) {
+                    added.add(fieldToMap(e.getValue()));
+                } else {
+                    com.company.dbreactjmix.metadata.dto.MetaSetModelDto before = fromMap.get(e.getKey());
+                    com.company.dbreactjmix.metadata.dto.MetaSetModelDto after = e.getValue();
+                    if (!java.util.Objects.equals(before.getDataType(), after.getDataType())
+                            || before.isNull() != after.isNull()
+                            || before.isPrimaryKey() != after.isPrimaryKey()
+                            || !java.util.Objects.equals(before.getName(), after.getName())) {
+                        Map<String, Object> diff = new LinkedHashMap<>();
+                        diff.put("code", e.getKey());
+                        diff.put("before", fieldToMap(before));
+                        diff.put("after", fieldToMap(after));
+                        changed.add(diff);
+                    }
+                }
+            }
+            for (Map.Entry<String, com.company.dbreactjmix.metadata.dto.MetaSetModelDto> e : fromMap.entrySet()) {
+                if (!toMap.containsKey(e.getKey())) removed.add(fieldToMap(e.getValue()));
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("from", fromVer);
+            result.put("to", toVer);
+            result.put("added", added);
+            result.put("removed", removed);
+            result.put("changed", changed);
+            return result;
+        });
+    }
+
+    private List<com.company.dbreactjmix.metadata.dto.MetaSetModelDto> loadVersionFields(String code, Integer versionNo) {
+        MetaSetVersion v = dataManager.load(MetaSetVersion.class)
+                .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :ver")
+                .parameter("code", code)
+                .parameter("ver", versionNo)
+                .optional().orElse(null);
+        if (v == null || v.getFieldData() == null) return List.of();
+        return codec.fromCanonicalJson(v.getFieldData());
+    }
+
+    private Map<String, Object> fieldToMap(com.company.dbreactjmix.metadata.dto.MetaSetModelDto f) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("code", f.getCode());
+        m.put("name", f.getName());
+        m.put("dataType", f.getDataType());
+        m.put("isPrimaryKey", f.isPrimaryKey());
+        m.put("isNull", f.isNull());
+        m.put("description", f.getDescription());
+        return m;
+    }
+
     private int countFieldsFromLatestVersion(String metaSetCode) {
         Integer maxVer = dataManager.loadValue(
                 "select max(v.versionNo) from MetaSetVersion v where v.metaSet.code = :code",
