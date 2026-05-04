@@ -56,7 +56,7 @@ public class MetaSetManagerService {
     public List<Map<String, Object>> listTablesByPack(String packCode) {
         return systemAuthenticator.withSystem(() -> {
             List<MetaSet> metaSets = dataManager.load(MetaSet.class)
-                    .query("select e from MetaSet e where e.metaPack.code = :packCode order by e.code asc")
+                    .query("e.metaPack.code = :packCode order by e.code asc")
                     .parameter("packCode", packCode)
                     .list();
 
