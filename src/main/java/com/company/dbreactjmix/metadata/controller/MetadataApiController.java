@@ -110,7 +110,7 @@ public class MetadataApiController {
         if (request.getDatabaseType() == DatabaseType.RESTAPI) {
             return apiMetadataService.buildMetaPack(request);
         }
-        return metadataJdbcService.buildMetaPack(request);
+        return metadataJdbcService.readDatabaseSchema(request);
     }
 
     @PostMapping("/mongodb/schema/deep-scan")
