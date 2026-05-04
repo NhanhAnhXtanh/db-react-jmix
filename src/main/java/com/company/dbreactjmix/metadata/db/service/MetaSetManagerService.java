@@ -74,6 +74,38 @@ public class MetaSetManagerService {
         });
     }
 
+    public List<Map<String, Object>> getLatestFields(String metaSetCode) {
+        return systemAuthenticator.withSystem(() -> {
+            Integer maxVer = dataManager.loadValue(
+                    "select max(v.versionNo) from MetaSetVersion v where v.metaSet.code = :code",
+                    Integer.class
+            ).parameter("code", metaSetCode).optional().orElse(null);
+
+            if (maxVer == null) return List.of();
+
+            MetaSetVersion latest = dataManager.load(MetaSetVersion.class)
+                    .query("select v from MetaSetVersion v where v.metaSet.code = :code and v.versionNo = :ver")
+                    .parameter("code", metaSetCode)
+                    .parameter("ver", maxVer)
+                    .optional().orElse(null);
+
+            if (latest == null || latest.getFieldData() == null) return List.of();
+
+            return codec.fromCanonicalJson(latest.getFieldData()).stream()
+                    .map(f -> {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("code", f.getCode());
+                        row.put("name", f.getName());
+                        row.put("dataType", f.getDataType());
+                        row.put("isPrimaryKey", f.isPrimaryKey());
+                        row.put("isNull", f.isNull());
+                        row.put("description", f.getDescription());
+                        return row;
+                    })
+                    .collect(java.util.stream.Collectors.toList());
+        });
+    }
+
     public Map<String, Object> updateStatus(String metaSetCode, String newStatus) {
         return systemAuthenticator.withSystem(() -> {
             MetaSet ms = dataManager.load(MetaSet.class)
