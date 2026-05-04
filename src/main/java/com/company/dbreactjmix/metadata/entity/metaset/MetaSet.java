@@ -43,6 +43,12 @@ public class MetaSet {
     @Column(name = "CURRENT_HASH_DATA")
     private String currentHashData;
 
+    @Column(name = "STATUS")
+    private String status;
+
+    @Column(name = "OPERATION")
+    private String operation;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "META_PACK_ID")
     private MetaPack metaPack;
@@ -74,6 +80,22 @@ public class MetaSet {
     @DeletedDate
     @Column(name = "DELETED_DATE")
     private OffsetDateTime deletedDate;
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public String getOperation() {
+        return operation;
+    }
+
+    public void setOperation(String operation) {
+        this.operation = operation;
+    }
 
     public MetaPack getMetaPack() {
         return metaPack;
