@@ -53,6 +53,29 @@ public class MetaSetManagerService {
         });
     }
 
+    public List<Map<String, Object>> listTablesByPack(String packCode) {
+        return systemAuthenticator.withSystem(() -> {
+            List<MetaSet> metaSets = dataManager.load(MetaSet.class)
+                    .query("select e from MetaSet e where e.metaPack.code = :packCode order by e.code asc")
+                    .parameter("packCode", packCode)
+                    .list();
+
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (MetaSet ms : metaSets) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("code", ms.getCode());
+                row.put("name", ms.getName());
+                row.put("status", ms.getStatus());
+                row.put("operation", ms.getOperation());
+                row.put("currentVersionNo", ms.getCurrentVersionNo());
+                row.put("fieldCount", countFieldsFromLatestVersion(ms.getCode()));
+                row.put("lastModifiedDate", formatDate(ms.getLastModifiedDate()));
+                result.add(row);
+            }
+            return result;
+        });
+    }
+
     public List<Map<String, Object>> listVersions(String metaSetCode) {
         return systemAuthenticator.withSystem(() -> {
             List<MetaSetVersion> versions = dataManager.load(MetaSetVersion.class)
